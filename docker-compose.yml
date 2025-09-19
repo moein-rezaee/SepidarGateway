@@ -7,7 +7,7 @@ services:
     ports:
       - "5259:5259" # نگاشت پورت کانتینر (پورت گیت‌وی) به پورت میزبان مورد نظر
     env_file:
-      - ./gateway.env
+      - ./env/Production/gateway.env # در محیط‌های دیگر این مسیر را به env همان محیط تغییر دهید
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5259/health/ready"]
       interval: 30s

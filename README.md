@@ -32,16 +32,16 @@ All customer/tenant customization lives in configuration files or environment va
 
 ### `appsettings.json`
 
-- پیکربندی آمادهٔ تولید برای آدرس `http://178.131.66.32:7373` و کاربر `robat` را در `Gateway:Tenants[0]` قرار داده‌ایم.
+- ساختار پایهٔ تننت در این فایل قرار دارد و برای اجرا به مقادیر محیطی یا `appsettings.{Environment}.json` وابسته است.
 - تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
 - همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
 
-### `gateway.env`
+### فایل‌های ENV به تفکیک محیط
 
-- این فایل همراه پروژه قرار گرفته و توسط `docker-compose` بارگذاری می‌شود.
-- تنها مقادیر حساس (IntegrationId، DeviceSerial، UserName، Password و سایر اسرار) در این فایل نگهداری می‌شوند و همهٔ کلیدها به صورت PascalCase نوشته شده‌اند تا با قرارداد بایندینگ .NET منطبق باشند.
-- برای هر مشتری جدید، مقدار هر کلید را در محیط مقصد تغییر دهید و در صورت نیاز شاخص‌های آرایه (`__0__`) را افزایش دهید؛ تنظیمات غیرحساس در `appsettings.{Environment}.json` قرار دارند.
-- اگر قصد اجرای لوکال بدون Docker را دارید می‌توانید همین متغیرها را در محیط سیستم‌عامل (`export` در لینوکس/مک یا `setx` در ویندوز) ست کنید تا بر `appsettings.{Environment}.json` غلبه کنند.
+- متغیرهای محیطی هر محیط در پوشهٔ [`env/`](env/) نگهداری می‌شوند. برای مثال `env/Production/gateway.env` برای تولید و `env/Development/gateway.env` برای توسعه است.
+- کلیدهای ENV کاملاً **UpperCase** و با تک‌آندرلاین نوشته شده‌اند (مثل `GATEWAY__TENANTS__0__SEPIDAR__INTEGRATIONID`) تا هم کوتاه باشند و هم با بایندینگ .NET مطابقت داشته باشند.
+- فقط مقادیر حساس مثل `IntegrationId`، `DeviceSerial`، `UserName` و `Password` در این فایل‌ها قرار می‌گیرد. تنظیمات عمومی در `appsettings.{Environment}.json` قرار دارد.
+- برای محیط‌های جدید، یک فایل تازه در همان پوشه بسازید و مسیر آن را در `docker-compose.yml` یا سرویس ارکستریشن خود قرار دهید. در صورت اجرای محلی بدون Docker می‌توانید فایل مناسب را با `source env/<Environment>/gateway.env` بارگذاری کنید یا متغیرها را دستی `export` کنید.
 
 ### Tenant configuration schema
 
@@ -78,18 +78,23 @@ All customer/tenant customization lives in configuration files or environment va
 
 > الگوی کامل همراه با توضیحات فارسی برای جایگزینی مقادیر در [`SepidarGateway/appsettings.TenantSample.json`](SepidarGateway/appsettings.TenantSample.json) قرار دارد.
 
+### `appsettings.Production.json`
+
+- این فایل فقط تنظیمات مخصوص محیط تولید (مانند `Sepidar.BaseUrl = http://178.131.66.32:7373` و نسخهٔ `101`) را روی ساختار پایه سوار می‌کند.
+- برای محیط‌های دیگر (مانند Staging یا QA) نیز می‌توانید بر اساس همین الگو فایل `appsettings.<Environment>.json` بسازید و فقط مقادیر متفاوت را وارد کنید.
+
 ### مقادیری که باید برای هر مشتری آماده و جایگزین کنید
 
 | مقدار | محل تنظیم | مقدار فعلی در سورس | از کجا تهیه شود |
 | --- | --- | --- | --- |
-| `TenantId` | `Gateway:Tenants[].TenantId` و `Gateway__Tenants__0__TenantId` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
+| `TenantId` | `Gateway:Tenants[].TenantId` و `GATEWAY__TENANTS__0__TENANTID` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
 | رزولوشن تننت | `Gateway:Tenants[].Match` یا متغیرهای ENV متناظر | Header `X-Tenant-ID = main-tenant` + Host `gateway.internal` + Path `/t/main` | بر اساس معماری شما (Host، Header یا PathBase) |
 | `Sepidar.BaseUrl` | کانفیگ یا ENV | `http://178.131.66.32:7373` | آدرس سرور Sepidar مشتری |
-| `Sepidar.IntegrationId` | ENV (مثال: `Gateway__Tenants__0__Sepidar__IntegrationId`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
-| `Sepidar.DeviceSerial` | ENV (مثال: `Gateway__Tenants__0__Sepidar__DeviceSerial`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
+| `Sepidar.IntegrationId` | ENV (مثال: `GATEWAY__TENANTS__0__SEPIDAR__INTEGRATIONID`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
+| `Sepidar.DeviceSerial` | ENV (مثال: `GATEWAY__TENANTS__0__SEPIDAR__DEVICESERIAL`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
 | `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
-| `Credentials.UserName` | ENV (مثال: `Gateway__Tenants__0__Credentials__UserName`) | `ChangeViaEnvironment` | نام کاربری Sepidar |
-| `Credentials.Password` | ENV (مثال: `Gateway__Tenants__0__Credentials__Password`) | `ChangeViaEnvironment` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
+| `Credentials.UserName` | ENV (مثال: `GATEWAY__TENANTS__0__CREDENTIALS__USERNAME`) | `ChangeViaEnvironment` | نام کاربری Sepidar |
+| `Credentials.Password` | ENV (مثال: `GATEWAY__TENANTS__0__CREDENTIALS__PASSWORD`) | `ChangeViaEnvironment` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
 | `Crypto.RsaPublicKeyXml` | کانفیگ یا ENV | تهی (در شروع) | پس از اولین `RegisterDevice` در پاسخ Sepidar ذخیره کنید |
 | `Jwt.CacheSeconds` و `PreAuthCheckSeconds` | کانفیگ یا ENV | `1800` و `300` | بر اساس سیاست تمدید توکن قابل تغییر است |
 | `Limits.RequestsPerMinute`، `QueueLimit`، `RequestTimeoutSeconds` | کانفیگ یا ENV | `120`، `100`، `60` | با سیاست نرخ‌دهی داخلی هماهنگ کنید |
@@ -97,7 +102,7 @@ All customer/tenant customization lives in configuration files or environment va
 ### گام‌های آماده‌سازی کانفیگ برای مشتری جدید
 
 1. فایل `SepidarGateway/appsettings.TenantSample.json` را کپی کنید و در فایل محیطی خود (مثل `appsettings.Production.json`) قرار دهید.
-2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، فایل `gateway.env` را باز کنید و همان مقادیر را در آن فایل یا نسخهٔ کپی شدهٔ آن بروزرسانی کنید.
+2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، فایل محیط مناسب (مثلاً `env/Production/gateway.env`) را باز کنید و همان مقادیر را در آن فایل یا نسخهٔ کپی شدهٔ آن بروزرسانی کنید.
 3. اولین بار که گیت‌وی اجرا می‌شود و عملیات `RegisterDevice` موفق باشد، مقادیر `RsaPublicKeyXml`، `RsaModulusBase64` و `RsaExponentBase64` در لاگ چاپ می‌شود؛ آن‌ها را در بخش `Crypto` ذخیره کنید تا دفعه بعد نیازی به رجیستر مجدد نباشد.
 4. در صورت نیاز، API Key یا تنظیمات CORS را برای مشتری فعال کنید (آرایه‌ها را خالی گذاشته‌ایم تا اختیاری باشند).
 
@@ -107,6 +112,9 @@ All customer/tenant customization lives in configuration files or environment va
 # Restore & build
 export PATH="$HOME/.dotnet:$PATH"
 dotnet build
+
+# Load development secrets (در صورت نیاز مسیر محیط دیگری را جایگزین کنید)
+source ../env/Development/gateway.env
 
 # Run the gateway (locally on port 5259)
 cd SepidarGateway
@@ -147,12 +155,13 @@ X-Tenant-ID: main-tenant
 docker build -t sepidar-gateway .
 
 # Start the container on port 5259
+# قبل از اجرا مطمئن شوید مسیر `env_file` در `docker-compose.yml` با محیط هدف شما (Production/Development و ...) منطبق است.
 docker compose up --build
 ```
 
 - `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5259**.
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
-- برای اجرای مشتری‌های بیشتر، یک کپی از `gateway.env` بسازید (یا شاخص‌ها را افزایش دهید) و آن را در سرویس جدید `env_file` کنید.
+- برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV همان محیط (مثلاً `env/Production/gateway.env`) بسازید، شاخص‌ها (`__0__`) را افزایش دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
 
 ## Security notes
 
