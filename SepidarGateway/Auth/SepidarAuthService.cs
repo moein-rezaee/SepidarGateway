@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Extensions;
+using Microsoft.AspNetCore.WebUtilities;
 using SepidarGateway.Configuration;
 using SepidarGateway.Crypto;
 
@@ -108,7 +110,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             }
 
             var HttpClient = CreateHttpClient(tenant);
-            using var RequestMessage = new HttpRequestMessage(HttpMethod.Get, BuildTenantUri(tenant, "api/IsAuthorized/"));
+            using var RequestMessage = new HttpRequestMessage(HttpMethod.Get, BuildTenantUri(tenant, "api/IsAuthorized"));
             PrepareHeaders(RequestMessage.Headers, tenant, AuthState.Token);
 
             using var HttpResponse = await HttpClient.SendAsync(RequestMessage, cancellationToken).ConfigureAwait(false);
@@ -172,7 +174,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             DeviceSerial = tenant.Sepidar.DeviceSerial
         }, SerializerOptions);
 
-        using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/Devices/Register/"))
+        using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/Devices/Register"))
         {
             Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
         };
@@ -204,7 +206,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
-        using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/users/login/"));
+        using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/users/login"));
         LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
         LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
         LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
@@ -247,7 +249,31 @@ public sealed class SepidarAuthService : ISepidarAuth
     private Uri BuildTenantUri(TenantOptions tenant, string relativePath)
     {
         var BaseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        return new Uri(BaseUri, relativePath);
+        var RelativePath = relativePath.TrimStart('/');
+        var TargetUri = new Uri(BaseUri, RelativePath);
+
+        if (!string.IsNullOrWhiteSpace(tenant.Sepidar.GenerationVersion))
+        {
+            var UriBuilder = new UriBuilder(TargetUri);
+            var Query = QueryHelpers.ParseQuery(UriBuilder.Query);
+            if (!Query.ContainsKey("api-version"))
+            {
+                var QueryBuilder = new QueryBuilder();
+                foreach (var QueryPair in Query)
+                {
+                    foreach (var QueryValue in QueryPair.Value)
+                    {
+                        QueryBuilder.Add(QueryPair.Key, QueryValue ?? string.Empty);
+                    }
+                }
+
+                QueryBuilder.Add("api-version", tenant.Sepidar.GenerationVersion);
+                UriBuilder.Query = QueryBuilder.ToQueryString().Value?.TrimStart('?') ?? string.Empty;
+                TargetUri = UriBuilder.Uri;
+            }
+        }
+
+        return TargetUri;
     }
 
     private void PrepareHeaders(HttpRequestHeaders headers, TenantOptions tenant, string token)

@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Extensions;
+using Microsoft.AspNetCore.WebUtilities;
 using SepidarGateway.Auth;
 using SepidarGateway.Crypto;
 using SepidarGateway.Observability;
@@ -41,6 +43,28 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         {
             var BaseUri = new Uri(TenantOptions.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
             var DownstreamUri = new Uri(BaseUri, OriginalUri.PathAndQuery.TrimStart('/'));
+
+            if (!string.IsNullOrWhiteSpace(TenantOptions.Sepidar.GenerationVersion))
+            {
+                var UriBuilder = new UriBuilder(DownstreamUri);
+                var Query = QueryHelpers.ParseQuery(UriBuilder.Query);
+                if (!Query.ContainsKey("api-version"))
+                {
+                    var QueryBuilder = new QueryBuilder();
+                    foreach (var QueryPair in Query)
+                    {
+                        foreach (var QueryValue in QueryPair.Value)
+                        {
+                            QueryBuilder.Add(QueryPair.Key, QueryValue ?? string.Empty);
+                        }
+                    }
+
+                    QueryBuilder.Add("api-version", TenantOptions.Sepidar.GenerationVersion);
+                    UriBuilder.Query = QueryBuilder.ToQueryString().Value?.TrimStart('?') ?? string.Empty;
+                    DownstreamUri = UriBuilder.Uri;
+                }
+            }
+
             Request.RequestUri = DownstreamUri;
         }
 
