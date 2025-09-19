@@ -19,7 +19,8 @@ var AppBuilder = WebApplication.CreateBuilder(args);
 AppBuilder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .AddJsonFile($"appsettings.{AppBuilder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
-    .AddEnvironmentVariables();
+    .AddEnvironmentVariables()
+    .AddGatewayEnvironmentOverrides();
 
 AppBuilder.Services.AddOptions<GatewayOptions>()
     .Bind(AppBuilder.Configuration.GetSection("Gateway"))

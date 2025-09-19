@@ -39,9 +39,10 @@ All customer/tenant customization lives in configuration files or environment va
 ### فایل‌های ENV به تفکیک محیط
 
 - متغیرهای محیطی هر محیط در پوشهٔ [`env/`](env/) نگهداری می‌شوند. برای مثال `env/Production/gateway.env` برای تولید و `env/Development/gateway.env` برای توسعه است.
-- کلیدهای ENV کاملاً **UpperCase** و با تک‌آندرلاین نوشته شده‌اند (مثل `GATEWAY__TENANTS__0__SEPIDAR__INTEGRATIONID`) تا هم کوتاه باشند و هم با بایندینگ .NET مطابقت داشته باشند.
+- نام متغیرها کوتاه، UpperCase و تنها با یک آندرلاین بین هر بخش نوشته شده‌اند (فرمت `GW_T{index}_...` مانند `GW_T0_SEPIDAR_INTEGRATIONID`). این قالب توسط گیت‌وی به تنظیمات تودرتو نگاشت می‌شود.
 - فقط مقادیر حساس مثل `IntegrationId`، `DeviceSerial`، `UserName` و `Password` در این فایل‌ها قرار می‌گیرد. تنظیمات عمومی در `appsettings.{Environment}.json` قرار دارد.
-- برای محیط‌های جدید، یک فایل تازه در همان پوشه بسازید و مسیر آن را در `docker-compose.yml` یا سرویس ارکستریشن خود قرار دهید. در صورت اجرای محلی بدون Docker می‌توانید فایل مناسب را با `source env/<Environment>/gateway.env` بارگذاری کنید یا متغیرها را دستی `export` کنید.
+- برای مقادیر آرایه‌ای (مانند `Hostnames` یا `ApiKeys`) عناصر را با `;` از هم جدا کنید تا هر مورد به‌صورت مجزا بارگذاری شود.
+- برای محیط‌های جدید، یک فایل تازه در همان پوشه بسازید. `docker-compose.yml` به صورت خودکار براساس مقدار `ASPNETCORE_ENVIRONMENT` مسیر صحیح را بارگذاری می‌کند. در اجرای محلی بدون Docker نیز می‌توانید فایل مناسب را با `source env/<Environment>/gateway.env` بارگذاری کنید یا متغیرها را دستی `export` کنید.
 
 ### Tenant configuration schema
 
@@ -87,14 +88,14 @@ All customer/tenant customization lives in configuration files or environment va
 
 | مقدار | محل تنظیم | مقدار فعلی در سورس | از کجا تهیه شود |
 | --- | --- | --- | --- |
-| `TenantId` | `Gateway:Tenants[].TenantId` و `GATEWAY__TENANTS__0__TENANTID` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
+| `TenantId` | `Gateway:Tenants[].TenantId` و `GW_T0_TENANTID` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
 | رزولوشن تننت | `Gateway:Tenants[].Match` یا متغیرهای ENV متناظر | Header `X-Tenant-ID = main-tenant` + Host `gateway.internal` + Path `/t/main` | بر اساس معماری شما (Host، Header یا PathBase) |
 | `Sepidar.BaseUrl` | کانفیگ یا ENV | `http://178.131.66.32:7373` | آدرس سرور Sepidar مشتری |
-| `Sepidar.IntegrationId` | ENV (مثال: `GATEWAY__TENANTS__0__SEPIDAR__INTEGRATIONID`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
-| `Sepidar.DeviceSerial` | ENV (مثال: `GATEWAY__TENANTS__0__SEPIDAR__DEVICESERIAL`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
+| `Sepidar.IntegrationId` | ENV (مثال: `GW_T0_SEPIDAR_INTEGRATIONID`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
+| `Sepidar.DeviceSerial` | ENV (مثال: `GW_T0_SEPIDAR_DEVICESERIAL`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
 | `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
-| `Credentials.UserName` | ENV (مثال: `GATEWAY__TENANTS__0__CREDENTIALS__USERNAME`) | `ChangeViaEnvironment` | نام کاربری Sepidar |
-| `Credentials.Password` | ENV (مثال: `GATEWAY__TENANTS__0__CREDENTIALS__PASSWORD`) | `ChangeViaEnvironment` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
+| `Credentials.UserName` | ENV (مثال: `GW_T0_CREDENTIALS_USERNAME`) | `ChangeViaEnvironment` | نام کاربری Sepidar |
+| `Credentials.Password` | ENV (مثال: `GW_T0_CREDENTIALS_PASSWORD`) | `ChangeViaEnvironment` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
 | `Crypto.RsaPublicKeyXml` | کانفیگ یا ENV | تهی (در شروع) | پس از اولین `RegisterDevice` در پاسخ Sepidar ذخیره کنید |
 | `Jwt.CacheSeconds` و `PreAuthCheckSeconds` | کانفیگ یا ENV | `1800` و `300` | بر اساس سیاست تمدید توکن قابل تغییر است |
 | `Limits.RequestsPerMinute`، `QueueLimit`، `RequestTimeoutSeconds` | کانفیگ یا ENV | `120`، `100`، `60` | با سیاست نرخ‌دهی داخلی هماهنگ کنید |
@@ -155,13 +156,13 @@ X-Tenant-ID: main-tenant
 docker build -t sepidar-gateway .
 
 # Start the container on port 5259
-# قبل از اجرا مطمئن شوید مسیر `env_file` در `docker-compose.yml` با محیط هدف شما (Production/Development و ...) منطبق است.
+# قبل از اجرا مطمئن شوید متغیر `ASPNETCORE_ENVIRONMENT` روی محیط هدف (مثلاً Production یا Development) تنظیم شده است تا `env_file` درست بارگذاری شود.
 docker compose up --build
 ```
 
 - `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5259**.
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
-- برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV همان محیط (مثلاً `env/Production/gateway.env`) بسازید، شاخص‌ها (`__0__`) را افزایش دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
+- برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV همان محیط (مثلاً `env/Production/gateway.env`) بسازید، شاخص تننت (`T0`, `T1`, ...) را افزایش دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
 
 ## Security notes
 
