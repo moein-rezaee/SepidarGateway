@@ -112,14 +112,27 @@ GatewayApp.UseMiddleware<ClientAuthorizationMiddleware>();
 GatewayApp.UseCors("TenantPolicy");
 GatewayApp.UseRateLimiter();
 
-GatewayApp.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
-GatewayApp.MapGet("/health/ready", () => Results.Json(new { status = "Ready" }));
-
-GatewayApp.MapGet("/", () => Results.Redirect("/swagger/", permanent: false));
-
 GatewayApp.Use(async (context, next) =>
 {
     var RequestPath = context.Request.Path.Value ?? string.Empty;
+
+    if (RequestPath.Equals("/health/live", StringComparison.OrdinalIgnoreCase))
+    {
+        await context.Response.WriteAsJsonAsync(new { status = "Live" }).ConfigureAwait(false);
+        return;
+    }
+
+    if (RequestPath.Equals("/health/ready", StringComparison.OrdinalIgnoreCase))
+    {
+        await context.Response.WriteAsJsonAsync(new { status = "Ready" }).ConfigureAwait(false);
+        return;
+    }
+
+    if (RequestPath.Equals("/", StringComparison.Ordinal))
+    {
+        context.Response.Redirect("/swagger/", permanent: false);
+        return;
+    }
 
     if (RequestPath.Equals("/swagger", StringComparison.OrdinalIgnoreCase))
     {

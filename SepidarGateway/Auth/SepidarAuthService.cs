@@ -278,27 +278,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             ? string.Empty
             : relativePath.TrimStart('/');
         var BaseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        var TargetUri = new Uri(BaseUri, NormalizedPath);
-
-        if (string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
-        {
-            return TargetUri;
-        }
-
-        if (!string.IsNullOrEmpty(TargetUri.Query) && TargetUri.Query.Contains("api-version", StringComparison.OrdinalIgnoreCase))
-        {
-            return TargetUri;
-        }
-
-        var Builder = new UriBuilder(TargetUri);
-        var ExistingQuery = Builder.Query;
-        if (!string.IsNullOrEmpty(ExistingQuery))
-        {
-            ExistingQuery = ExistingQuery.TrimStart('?') + "&";
-        }
-
-        Builder.Query = $"{ExistingQuery}api-version={Uri.EscapeDataString(tenant.Sepidar.ApiVersion)}";
-        return Builder.Uri;
+        return new Uri(BaseUri, NormalizedPath);
     }
 
     private IEnumerable<string> EnumerateRegisterPaths(TenantOptions tenant)
