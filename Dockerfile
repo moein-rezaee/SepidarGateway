@@ -15,5 +15,5 @@ WORKDIR /app
 COPY --from=build /app/publish ./
 EXPOSE 5259
 
-ENV ASPNETCORE_URLS=http://+:5259
+ENV ASPNETCORE_URLS=http://0.0.0.0:5259
 ENTRYPOINT ["dotnet", "SepidarGateway.dll"]
