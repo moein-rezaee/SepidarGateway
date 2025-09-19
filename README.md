@@ -132,7 +132,7 @@ X-Tenant-ID: main-tenant
 
 پس از بالا آمدن سرویس، برای اطمینان از صحت اجرا این گام‌ها را انجام دهید:
 
-1. سلامت گیت‌وی را بررسی کنید: `curl http://localhost:5259/health/ready` باید وضعیت `Healthy` برگرداند.
+1. سلامت گیت‌وی را بررسی کنید: `curl http://localhost:5259/health/ready` باید وضعیت JSON شامل `"status": "Ready"` برگرداند.
 2. یک درخواست واقعی به سپیدار بفرستید (مثال همگام‌سازی نسخه):
    ```bash
    curl -H "X-Tenant-ID: main-tenant" http://localhost:5259/api/General/GenerationVersion/

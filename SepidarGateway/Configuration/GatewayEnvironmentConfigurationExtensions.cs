@@ -60,7 +60,7 @@ public static class GatewayEnvironmentConfigurationExtensions
 
     public static IConfigurationBuilder AddGatewayEnvironmentOverrides(this IConfigurationBuilder builder)
     {
-        var overrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
         foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
         {

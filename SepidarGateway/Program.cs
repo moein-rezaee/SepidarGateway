@@ -112,8 +112,10 @@ GatewayApp.UseMiddleware<ClientAuthorizationMiddleware>();
 GatewayApp.UseCors("TenantPolicy");
 GatewayApp.UseRateLimiter();
 
-GatewayApp.MapHealthChecks("/health/live");
-GatewayApp.MapHealthChecks("/health/ready");
+GatewayApp.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
+GatewayApp.MapGet("/health/ready", () => Results.Json(new { status = "Ready" }));
+
+GatewayApp.MapGet("/", () => Results.Redirect("/swagger"));
 
 GatewayApp.UseSwagger();
 GatewayApp.UseSwaggerUI(swaggerUiOptions =>
