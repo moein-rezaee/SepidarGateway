@@ -1,3 +1,4 @@
+using System;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
@@ -116,6 +117,22 @@ GatewayApp.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
 GatewayApp.MapGet("/health/ready", () => Results.Json(new { status = "Ready" }));
 
 GatewayApp.MapGet("/", () => Results.Redirect("/swagger"));
+
+GatewayApp.Use(async (request_context, next_handler) =>
+{
+    var RequestPath = request_context.Request.Path.Value;
+    if (!string.IsNullOrEmpty(RequestPath)
+        && RequestPath.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase)
+        && !RequestPath.StartsWith("/swagger", StringComparison.Ordinal))
+    {
+        var NormalizedPath = "/swagger" + RequestPath[8..];
+        var RedirectTarget = string.Concat(NormalizedPath, request_context.Request.QueryString.Value);
+        request_context.Response.Redirect(RedirectTarget);
+        return;
+    }
+
+    await next_handler().ConfigureAwait(false);
+});
 
 GatewayApp.UseSwagger();
 GatewayApp.UseSwaggerUI(swaggerUiOptions =>

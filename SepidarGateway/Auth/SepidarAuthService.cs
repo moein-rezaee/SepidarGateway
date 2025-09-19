@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http.Headers;
@@ -270,6 +271,22 @@ public sealed class SepidarAuthService : ISepidarAuth
 
     private IEnumerable<string> EnumerateRegisterPaths(TenantOptions tenant)
     {
+        var SeenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var RawPath in EnumerateRawRegisterPaths(tenant))
+        {
+            foreach (var CandidatePath in ExpandRegisterPathVariants(RawPath))
+            {
+                if (SeenPaths.Add(CandidatePath))
+                {
+                    yield return CandidatePath;
+                }
+            }
+        }
+    }
+
+    private IEnumerable<string> EnumerateRawRegisterPaths(TenantOptions tenant)
+    {
         if (!string.IsNullOrWhiteSpace(tenant.Sepidar.RegisterPath))
         {
             yield return tenant.Sepidar.RegisterPath;
@@ -284,6 +301,37 @@ public sealed class SepidarAuthService : ISepidarAuth
                     yield return FallbackPath;
                 }
             }
+        }
+    }
+
+    private static IEnumerable<string> ExpandRegisterPathVariants(string registerPath)
+    {
+        if (string.IsNullOrWhiteSpace(registerPath))
+        {
+            yield break;
+        }
+
+        var TrimmedPath = registerPath.Trim();
+        if (TrimmedPath.Length == 0)
+        {
+            yield break;
+        }
+
+        var WithoutLeadingSlash = TrimmedPath.TrimStart('/');
+        if (WithoutLeadingSlash.Length == 0)
+        {
+            yield break;
+        }
+
+        yield return WithoutLeadingSlash;
+
+        if (WithoutLeadingSlash.EndsWith("/", StringComparison.Ordinal))
+        {
+            yield return WithoutLeadingSlash.TrimEnd('/');
+        }
+        else
+        {
+            yield return WithoutLeadingSlash + "/";
         }
     }
 
