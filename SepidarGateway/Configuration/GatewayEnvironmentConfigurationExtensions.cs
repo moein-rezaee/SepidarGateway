@@ -25,6 +25,7 @@ public static class GatewayEnvironmentConfigurationExtensions
         ["INTEGRATIONID"] = "IntegrationId",
         ["DEVICESERIAL"] = "DeviceSerial",
         ["GENERATIONVERSION"] = "GenerationVersion",
+        ["APIVERSION"] = "ApiVersion",
         ["REGISTERPATH"] = "RegisterPath",
         ["REGISTERFALLBACKPATHS"] = "RegisterFallbackPaths",
         ["LOGINPATH"] = "LoginPath",

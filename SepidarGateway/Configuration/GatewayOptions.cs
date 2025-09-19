@@ -70,6 +70,8 @@ public class SepidarEndpointOptions
     [Required]
     public string GenerationVersion { get; set; } = string.Empty;
 
+    public string ApiVersion { get; set; } = string.Empty;
+
     public string RegisterPath { get; set; } = "api/Devices/Register/";
 
     public string[]? RegisterFallbackPaths { get; set; } = new[] { "api/Device/Register/" };

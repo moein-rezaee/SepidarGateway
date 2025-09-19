@@ -115,19 +115,27 @@ GatewayApp.UseRateLimiter();
 GatewayApp.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
 GatewayApp.MapGet("/health/ready", () => Results.Json(new { status = "Ready" }));
 
-GatewayApp.MapGet("/", () => Results.Redirect("/swagger"));
+GatewayApp.MapGet("/", () => Results.Redirect("/swagger/", permanent: false));
 
 GatewayApp.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/Swagger", StringComparison.OrdinalIgnoreCase, out var Remaining))
-    {
-        var RedirectTarget = "/swagger" + Remaining.Value;
-        if (string.IsNullOrEmpty(Remaining.Value))
-        {
-            RedirectTarget += "/";
-        }
+    var RequestPath = context.Request.Path.Value ?? string.Empty;
 
-        context.Response.Redirect(RedirectTarget);
+    if (RequestPath.Equals("/swagger", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Redirect("/swagger/", permanent: false);
+        return;
+    }
+
+    if (!RequestPath.StartsWith("/swagger", StringComparison.Ordinal) &&
+        RequestPath.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
+    {
+        var Suffix = RequestPath.Length > "/swagger".Length
+            ? RequestPath["/swagger".Length..]
+            : string.Empty;
+        var RedirectTarget = string.IsNullOrEmpty(Suffix) ? "/swagger/" : "/swagger" + Suffix;
+
+        context.Response.Redirect(RedirectTarget, permanent: false);
         return;
     }
 

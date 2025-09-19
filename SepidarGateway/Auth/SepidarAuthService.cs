@@ -182,6 +182,14 @@ public sealed class SepidarAuthService : ISepidarAuth
                 Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
             };
 
+            if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+            {
+                RegisterRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+            }
+
+            RegisterRequest.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
+            RegisterRequest.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
+
             using var RegisterResponse = await HttpClient.SendAsync(RegisterRequest, cancellationToken).ConfigureAwait(false);
             if (RegisterResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
@@ -225,6 +233,11 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
         LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
+        if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+        {
+            LoginRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+        }
+
         var PasswordHash = ComputePasswordHash(tenant.Credentials.Password);
 
         var LoginPayload = JsonSerializer.Serialize(new
@@ -265,7 +278,27 @@ public sealed class SepidarAuthService : ISepidarAuth
             ? string.Empty
             : relativePath.TrimStart('/');
         var BaseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        return new Uri(BaseUri, NormalizedPath);
+        var TargetUri = new Uri(BaseUri, NormalizedPath);
+
+        if (string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+        {
+            return TargetUri;
+        }
+
+        if (!string.IsNullOrEmpty(TargetUri.Query) && TargetUri.Query.Contains("api-version", StringComparison.OrdinalIgnoreCase))
+        {
+            return TargetUri;
+        }
+
+        var Builder = new UriBuilder(TargetUri);
+        var ExistingQuery = Builder.Query;
+        if (!string.IsNullOrEmpty(ExistingQuery))
+        {
+            ExistingQuery = ExistingQuery.TrimStart('?') + "&";
+        }
+
+        Builder.Query = $"{ExistingQuery}api-version={Uri.EscapeDataString(tenant.Sepidar.ApiVersion)}";
+        return Builder.Uri;
     }
 
     private IEnumerable<string> EnumerateRegisterPaths(TenantOptions tenant)
@@ -333,8 +366,18 @@ public sealed class SepidarAuthService : ISepidarAuth
     {
         headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
         headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
+
+        if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+        {
+            headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+        }
+
+        var ArbitraryCode = Guid.NewGuid().ToString();
+        var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
+
         headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        headers.TryAddWithoutValidation("ArbitraryCode", Guid.NewGuid().ToString());
+        headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
+        headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
     }
 
     private static string ComputePasswordHash(string password)

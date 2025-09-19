@@ -48,9 +48,15 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         Request.Headers.Remove("IntegrationID");
         Request.Headers.Remove("ArbitraryCode");
         Request.Headers.Remove("EncArbitraryCode");
+        Request.Headers.Remove("api-version");
 
         Request.Headers.TryAddWithoutValidation("GenerationVersion", TenantOptions.Sepidar.GenerationVersion);
         Request.Headers.TryAddWithoutValidation("IntegrationID", TenantOptions.Sepidar.IntegrationId);
+
+        if (!string.IsNullOrWhiteSpace(TenantOptions.Sepidar.ApiVersion))
+        {
+            Request.Headers.TryAddWithoutValidation("api-version", TenantOptions.Sepidar.ApiVersion);
+        }
 
         var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, TenantOptions.Crypto);

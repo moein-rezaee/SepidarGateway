@@ -36,6 +36,7 @@ All customer/tenant customization lives in configuration files or environment va
 - تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
 - همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
 - در صورتی که سرویس مشتری مسیرهای متفاوتی برای رجیستر/لاگین دارد، مقادیر `Sepidar.RegisterPath`، `Sepidar.RegisterFallbackPaths`، `Sepidar.LoginPath` و `Sepidar.IsAuthorizedPath` را در کانفیگ یا ENV تنظیم کنید؛ گیت‌وی به‌طور پیش‌فرض علاوه بر مسیر اصلی، نسخهٔ تکی `api/Device/Register/` را نیز امتحان می‌کند.
+- اگر سرویس مشتری نیاز به پارامتر یا هدر `api-version` دارد، مقدار `Sepidar.ApiVersion` را مشخص کنید تا روی تمام درخواست‌های ثبت‌نام، لاگین و فراخوانی‌های خروجی اعمال شود.
 
 ### فایل‌های ENV به تفکیک محیط
 
@@ -62,7 +63,8 @@ All customer/tenant customization lives in configuration files or environment va
           "BaseUrl": "http://178.131.66.32:7373",
           "IntegrationId": "ChangeViaEnvironment",
           "DeviceSerial": "ChangeViaEnvironment",
-          "GenerationVersion": "101"
+          "GenerationVersion": "101",
+          "ApiVersion": "101"
         },
         "Credentials": {
           "UserName": "ChangeViaEnvironment",
@@ -94,7 +96,8 @@ All customer/tenant customization lives in configuration files or environment va
 | `Sepidar.BaseUrl` | کانفیگ یا ENV | `http://178.131.66.32:7373` | آدرس سرور Sepidar مشتری |
 | `Sepidar.IntegrationId` | ENV (مثال: `GW_T0_SEPIDAR_INTEGRATIONID`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
 | `Sepidar.DeviceSerial` | ENV (مثال: `GW_T0_SEPIDAR_DEVICESERIAL`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
-| `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
+| `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقداری که باید در هدر `GenerationVersion` ارسال شود |
+| `Sepidar.ApiVersion` | کانفیگ یا ENV | `101` | اگر سرویس مشتری پارامتر یا هدر `api-version` می‌خواهد، این مقدار را تنظیم کنید (در صورت خالی بودن اضافه نمی‌شود) |
 | `Sepidar.RegisterPath` | کانفیگ یا ENV (اختیاری) | `api/Devices/Register/` | اگر سرویس مشتری مسیر رجیستر متفاوتی دارد این مقدار را تنظیم کنید |
 | `Sepidar.RegisterFallbackPaths[]` | کانفیگ یا ENV (اختیاری) | `api/Device/Register/` | لیست مسیرهای جایگزین در صورت خطای 404 رجیستر؛ گیت‌وی به‌طور پیش‌فرض نسخه‌های حروف کوچک و مسیر `api/Device/RegisterDevice/` را نیز امتحان می‌کند |
 | `Sepidar.LoginPath` | کانفیگ یا ENV (اختیاری) | `api/users/login/` | مسیر سفارشی لاگین در صورت تفاوت با پیش‌فرض |
