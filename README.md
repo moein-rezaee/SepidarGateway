@@ -139,6 +139,13 @@ X-API-Key: local-development-key
 
 The gateway will ensure the Sepidar headers (`GenerationVersion`, `IntegrationID`, `ArbitraryCode`, `EncArbitraryCode`) and bearer token are attached before proxying the request.
 
+### Swagger & API explorer
+
+- Browse to [`http://localhost:5000/swagger`](http://localhost:5000/swagger) while the gateway is running to open the interactive documentation.
+- The OpenAPI document is generated from `Gateway:Ocelot:Routes`, so any new Sepidar endpoint you add to configuration is immediately reflected.
+- Use the **Authorize** button in Swagger UI to provide `X-Tenant-ID` and `X-API-Key` values; the UI stores them and includes the headers in "Try it out" requests through the gateway.
+- The generated operations document typical Sepidar responses (`200`, `401`, `412`) so clients understand how errors are surfaced through the proxy.
+
 ## Docker
 
 A production-ready image is provided:

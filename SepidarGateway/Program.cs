@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.OpenApi.Models;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
 using SepidarGateway.Auth;
@@ -11,6 +12,7 @@ using SepidarGateway.Middleware;
 using SepidarGateway.Observability;
 using SepidarGateway.Services;
 using SepidarGateway.Tenancy;
+using SepidarGateway.Swagger;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -41,6 +43,35 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHealthChecks();
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc(SwaggerConstants.DocumentName, new OpenApiInfo
+    {
+        Title = "Sepidar Gateway",
+        Version = "v1",
+        Description = "Gateway-as-a-device facade for Sepidar E-Commerce Web Service."
+    });
+
+    options.DocumentFilter<GatewayRoutesDocumentFilter>();
+
+    options.AddSecurityDefinition(SwaggerConstants.TenantIdScheme, new OpenApiSecurityScheme
+    {
+        Description = "Tenant identifier header when host or path-based matching is not used.",
+        In = ParameterLocation.Header,
+        Name = "X-Tenant-ID",
+        Type = SecuritySchemeType.ApiKey
+    });
+
+    options.AddSecurityDefinition(SwaggerConstants.ApiKeyScheme, new OpenApiSecurityScheme
+    {
+        Description = "Client API key required when the tenant enables API-key authentication.",
+        In = ParameterLocation.Header,
+        Name = "X-API-Key",
+        Type = SecuritySchemeType.ApiKey
+    });
+});
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -82,6 +113,16 @@ app.UseRateLimiter();
 
 app.MapHealthChecks("/health/live");
 app.MapHealthChecks("/health/ready");
+
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.RoutePrefix = "swagger";
+    options.DocumentTitle = "Sepidar Gateway";
+    options.SwaggerEndpoint("/swagger/sepidar/swagger.json", "Sepidar Gateway v1");
+    options.DisplayRequestDuration();
+    options.EnableTryItOutByDefault();
+});
 
 await app.UseOcelot();
 
