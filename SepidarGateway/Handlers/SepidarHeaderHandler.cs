@@ -41,7 +41,7 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         {
             var BaseUri = new Uri(TenantOptions.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
             var DownstreamUri = new Uri(BaseUri, OriginalUri.PathAndQuery.TrimStart('/'));
-            Request.RequestUri = DownstreamUri;
+            Request.RequestUri = AppendApiVersionQuery(DownstreamUri, TenantOptions.Sepidar.ApiVersion);
         }
 
         Request.Headers.Remove("GenerationVersion");
@@ -91,5 +91,35 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         }
 
         return await base.SendAsync(Request, CancellationToken).ConfigureAwait(false);
+    }
+
+    private static Uri AppendApiVersionQuery(Uri uri, string? apiVersion)
+    {
+        if (string.IsNullOrWhiteSpace(apiVersion))
+        {
+            return uri;
+        }
+
+        var Builder = new UriBuilder(uri);
+        var ExistingQuery = Builder.Query;
+        var TrimmedQuery = string.IsNullOrEmpty(ExistingQuery)
+            ? string.Empty
+            : ExistingQuery.TrimStart('?');
+
+        var HasApiVersion = TrimmedQuery
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Any(Part => Part.StartsWith("api-version=", StringComparison.OrdinalIgnoreCase));
+
+        if (HasApiVersion)
+        {
+            return Builder.Uri;
+        }
+
+        var EncodedValue = Uri.EscapeDataString(apiVersion);
+        Builder.Query = string.IsNullOrEmpty(TrimmedQuery)
+            ? $"api-version={EncodedValue}"
+            : $"{TrimmedQuery}&api-version={EncodedValue}";
+
+        return Builder.Uri;
     }
 }

@@ -46,7 +46,7 @@ public class SepidarHeaderHandlerTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.NotNull(recordingHandler.LastRequest);
-        Assert.Equal(new Uri("http://sepidar.local:7373/api/Customers"), recordingHandler.LastRequest!.RequestUri);
+        Assert.Equal(new Uri("http://sepidar.local:7373/api/Customers?api-version=101"), recordingHandler.LastRequest!.RequestUri);
 
         var headers = recordingHandler.LastRequest.Headers;
         Assert.Equal("101", headers.GetValues("GenerationVersion").Single());

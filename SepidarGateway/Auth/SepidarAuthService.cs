@@ -110,7 +110,9 @@ public sealed class SepidarAuthService : ISepidarAuth
             }
 
             var HttpClient = CreateHttpClient(tenant);
-            using var RequestMessage = new HttpRequestMessage(HttpMethod.Get, BuildTenantUri(tenant, tenant.Sepidar.IsAuthorizedPath));
+            using var RequestMessage = new HttpRequestMessage(
+                HttpMethod.Get,
+                BuildTenantUri(tenant, tenant.Sepidar.IsAuthorizedPath, includeApiVersionQuery: true));
             PrepareHeaders(RequestMessage.Headers, tenant, AuthState.Token);
 
             using var HttpResponse = await HttpClient.SendAsync(RequestMessage, cancellationToken).ConfigureAwait(false);
@@ -190,7 +192,9 @@ public sealed class SepidarAuthService : ISepidarAuth
                 }
 
                 AttemptedPaths.Add(RegisterPath);
-                using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, RegisterPath))
+                var RegisterUri = BuildTenantUri(tenant, RegisterPath, includeApiVersionQuery: true);
+
+                using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, RegisterUri)
                 {
                     Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
                 };
@@ -313,16 +317,18 @@ public sealed class SepidarAuthService : ISepidarAuth
         var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
-        using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, tenant.Sepidar.LoginPath));
-        LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
-        LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
-        LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
+        var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: true);
 
+        using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
         if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
         {
             LoginRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
         }
+
+        LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
+        LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
+        LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
+        LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
         var PasswordHash = ComputePasswordHash(tenant.Credentials.Password);
 
@@ -358,13 +364,38 @@ public sealed class SepidarAuthService : ISepidarAuth
         return HttpClient;
     }
 
-    private Uri BuildTenantUri(TenantOptions tenant, string relativePath)
+    private Uri BuildTenantUri(TenantOptions tenant, string relativePath, bool includeApiVersionQuery = false)
     {
         var NormalizedPath = string.IsNullOrWhiteSpace(relativePath)
             ? string.Empty
             : relativePath.TrimStart('/');
         var BaseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        return new Uri(BaseUri, NormalizedPath);
+        var TenantUri = new Uri(BaseUri, NormalizedPath);
+
+        if (!includeApiVersionQuery || string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+        {
+            return TenantUri;
+        }
+
+        var Builder = new UriBuilder(TenantUri);
+        var ExistingQuery = Builder.Query;
+        var TrimmedQuery = string.IsNullOrEmpty(ExistingQuery)
+            ? string.Empty
+            : ExistingQuery.TrimStart('?');
+
+        var HasApiVersion = TrimmedQuery
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Any(Part => Part.StartsWith("api-version=", StringComparison.OrdinalIgnoreCase));
+
+        if (!HasApiVersion)
+        {
+            var EncodedValue = Uri.EscapeDataString(tenant.Sepidar.ApiVersion);
+            Builder.Query = string.IsNullOrEmpty(TrimmedQuery)
+                ? $"api-version={EncodedValue}"
+                : $"{TrimmedQuery}&api-version={EncodedValue}";
+        }
+
+        return Builder.Uri;
     }
 
     private IEnumerable<string> EnumerateRegisterPaths(TenantOptions tenant)

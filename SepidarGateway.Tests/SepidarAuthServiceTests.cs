@@ -12,7 +12,7 @@ namespace SepidarGateway.Tests;
 public class SepidarAuthServiceTests
 {
     [Fact]
-    public async Task Register_UsesHeadersWithoutAppendingQueryParameters()
+    public async Task Register_AppendsApiVersionToQuery()
     {
         var registerHandler = new RegisterHandler();
         var httpClientFactory = new SingleClientFactory(new HttpClient(registerHandler));
@@ -51,8 +51,8 @@ public class SepidarAuthServiceTests
 
         Assert.Single(registerHandler.Requests);
         var request = registerHandler.Requests[0];
-        Assert.Equal("http://example.org:7373/api/Devices/Register/", request.RequestUri!.ToString());
-        Assert.Equal(string.Empty, request.RequestUri!.Query);
+        Assert.Equal("http://example.org:7373/api/Devices/Register/?api-version=101", request.RequestUri!.ToString());
+        Assert.Equal("?api-version=101", request.RequestUri!.Query);
         Assert.Equal("101", request.Headers.GetValues("api-version").Single());
         Assert.Equal("101", request.Headers.GetValues("GenerationVersion").Single());
         Assert.Equal("integration", request.Headers.GetValues("IntegrationID").Single());
@@ -81,7 +81,7 @@ public class SepidarAuthServiceTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request);
-            Assert.Equal(string.Empty, request.RequestUri?.Query);
+            Assert.Equal("?api-version=101", request.RequestUri?.Query);
 
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {

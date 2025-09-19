@@ -36,7 +36,7 @@ All customer/tenant customization lives in configuration files or environment va
 - تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
 - همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
 - در صورتی که سرویس مشتری مسیرهای متفاوتی برای رجیستر/لاگین دارد، مقادیر `Sepidar.RegisterPath`، `Sepidar.RegisterFallbackPaths`، `Sepidar.LoginPath` و `Sepidar.IsAuthorizedPath` را در کانفیگ یا ENV تنظیم کنید؛ گیت‌وی به‌طور پیش‌فرض علاوه بر مسیر اصلی، نسخه‌های `api/Device/Register/`، `api/Device/RegisterDevice/`، `api/Devices/RegisterDevice/` و `api/RegisterDevice/` را نیز تست می‌کند و در صورت نیاز مسیرهای حاوی «register» را به‌صورت خودکار از Swagger سپیدار کشف خواهد کرد.
-- اگر سرویس مشتری نیاز به پارامتر یا هدر `api-version` دارد، مقدار `Sepidar.ApiVersion` را مشخص کنید تا روی تمام درخواست‌های ثبت‌نام، لاگین و فراخوانی‌های خروجی اعمال شود.
+- اگر سرویس مشتری نیاز به پارامتر یا هدر `api-version` دارد، مقدار `Sepidar.ApiVersion` را مشخص کنید تا علاوه بر هدر، پارامتر Query آن نیز روی تمام درخواست‌های ثبت‌نام، لاگین و فراخوانی‌های خروجی اضافه شود.
 
 ### فایل‌های ENV به تفکیک محیط
 
