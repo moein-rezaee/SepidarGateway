@@ -5,7 +5,7 @@ services:
     build: .
     image: sepidar-gateway:latest
     ports:
-      - "8080:8080" # نگاشت پورت کانتینر (8080) به پورت میزبان مورد نظر
+      - "5259:5259" # نگاشت پورت کانتینر (پورت گیت‌وی) به پورت میزبان مورد نظر
     environment:
       ASPNETCORE_ENVIRONMENT: Production # در صورت نیاز به محیط دیگر (Development/Staging) جایگزین کنید
       Gateway__Tenants__0__TenantId: main-tenant # برای هر مشتری یک شناسه یکتا وارد کنید
@@ -18,7 +18,7 @@ services:
       Gateway__Tenants__0__Credentials__UserName: robat # نام کاربری سپیدار مشتری
       Gateway__Tenants__0__Credentials__PasswordMd5: 7294a8e1350ed4228c575b9ab855de30 # هش MD5 پسورد مشتری (89757)
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:5259/health/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

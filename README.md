@@ -101,25 +101,25 @@ All customer/tenant customization lives in configuration files or environment va
 export PATH="$HOME/.dotnet:$PATH"
 dotnet build
 
-# Run the gateway (locally on port 8080)
+# Run the gateway (locally on port 5259)
 cd SepidarGateway
-ASPNETCORE_URLS=http://localhost:8080 dotnet run
+ASPNETCORE_URLS=http://localhost:5259 dotnet run
 ```
 
-With the bundled configuration the gateway will listen on `http://localhost:8080`. یک درخواست ساده از کلاینت داخلی به شکل زیر است:
+With the bundled configuration the gateway will listen on `http://localhost:5259`. یک درخواست ساده از کلاینت داخلی به شکل زیر است:
 
 ```http
 GET /api/Customers HTTP/1.1
-Host: localhost:8080
+Host: localhost:5259
 X-Tenant-ID: main-tenant
 ```
 
 پس از بالا آمدن سرویس، برای اطمینان از صحت اجرا این گام‌ها را انجام دهید:
 
-1. سلامت گیت‌وی را بررسی کنید: `curl http://localhost:8080/health/ready` باید وضعیت `Healthy` برگرداند.
+1. سلامت گیت‌وی را بررسی کنید: `curl http://localhost:5259/health/ready` باید وضعیت `Healthy` برگرداند.
 2. یک درخواست واقعی به سپیدار بفرستید (مثال همگام‌سازی نسخه):
    ```bash
-   curl -H "X-Tenant-ID: main-tenant" http://localhost:8080/api/General/GenerationVersion/
+   curl -H "X-Tenant-ID: main-tenant" http://localhost:5259/api/General/GenerationVersion/
    ```
    اگر مقادیر کانفیگ درست باشد، پاسخ 200 با مقدار نسخه (`101`) برمی‌گردد؛ در صورت خطای 412 نسخه سپیدار را بررسی و به‌روزرسانی کنید.
 3. در لاگ‌های گیت‌وی مطمئن شوید عملیات `RegisterDevice` تنها بار اول انجام شده و سپس JWT کش می‌شود.
@@ -128,7 +128,7 @@ X-Tenant-ID: main-tenant
 
 ### Swagger & API explorer
 
-- Swagger UI در نشانی [`http://localhost:8080/swagger`](http://localhost:8080/swagger) در دسترس است.
+- Swagger UI در نشانی [`http://localhost:5259/swagger`](http://localhost:5259/swagger) در دسترس است.
 - مستندات OpenAPI مستقیماً از `Gateway:Ocelot:Routes` ساخته می‌شود؛ هر مسیری که در کانفیگ اضافه کنید، بلافاصله در Swagger دیده می‌شود.
 - در پنجره Authorize فقط هدر `X-Tenant-ID` (مثال: `main-tenant`) را وارد کنید تا درخواست‌های "Try it out" از طریق همان تننت ارسال شود.
 - تب "Schemas" فهرست پاسخ‌های متداول Sepidar (`200`، `401`، `412`) را نشان می‌دهد تا رفتار خطاها مشخص باشد.
@@ -139,11 +139,11 @@ X-Tenant-ID: main-tenant
 # Build the gateway image
 docker build -t sepidar-gateway .
 
-# Start the container on port 8080
+# Start the container on port 5259
 docker compose up --build
 ```
 
-- `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **8080**.
+- `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5259**.
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
 - Override any environment variable in `docker-compose.yml` to run the gateway for an additional customer.
 

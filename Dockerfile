@@ -13,7 +13,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS final
 WORKDIR /app
 
 COPY --from=build /app/publish ./
-EXPOSE 8080
+EXPOSE 5259
 
-ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_URLS=http://+:5259
 ENTRYPOINT ["dotnet", "SepidarGateway.dll"]
