@@ -79,6 +79,8 @@ public class SepidarEndpointOptions
     public string LoginPath { get; set; } = "api/users/login/";
 
     public string IsAuthorizedPath { get; set; } = "api/IsAuthorized/";
+
+    public string SwaggerDocumentPath { get; set; } = "swagger/sepidar/swagger.json";
 }
 
 public class TenantCredentialOptions

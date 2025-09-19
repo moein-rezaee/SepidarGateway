@@ -35,7 +35,7 @@ All customer/tenant customization lives in configuration files or environment va
 - ساختار پایهٔ تننت در این فایل قرار دارد و برای اجرا به مقادیر محیطی یا `appsettings.{Environment}.json` وابسته است.
 - تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
 - همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
-- در صورتی که سرویس مشتری مسیرهای متفاوتی برای رجیستر/لاگین دارد، مقادیر `Sepidar.RegisterPath`، `Sepidar.RegisterFallbackPaths`، `Sepidar.LoginPath` و `Sepidar.IsAuthorizedPath` را در کانفیگ یا ENV تنظیم کنید؛ گیت‌وی به‌طور پیش‌فرض علاوه بر مسیر اصلی، نسخهٔ تکی `api/Device/Register/` را نیز امتحان می‌کند.
+- در صورتی که سرویس مشتری مسیرهای متفاوتی برای رجیستر/لاگین دارد، مقادیر `Sepidar.RegisterPath`، `Sepidar.RegisterFallbackPaths`، `Sepidar.LoginPath` و `Sepidar.IsAuthorizedPath` را در کانفیگ یا ENV تنظیم کنید؛ گیت‌وی به‌طور پیش‌فرض علاوه بر مسیر اصلی، نسخه‌های `api/Device/Register/`، `api/Device/RegisterDevice/`، `api/Devices/RegisterDevice/` و `api/RegisterDevice/` را نیز تست می‌کند و در صورت نیاز مسیرهای حاوی «register» را به‌صورت خودکار از Swagger سپیدار کشف خواهد کرد.
 - اگر سرویس مشتری نیاز به پارامتر یا هدر `api-version` دارد، مقدار `Sepidar.ApiVersion` را مشخص کنید تا روی تمام درخواست‌های ثبت‌نام، لاگین و فراخوانی‌های خروجی اعمال شود.
 
 ### فایل‌های ENV به تفکیک محیط
@@ -99,7 +99,8 @@ All customer/tenant customization lives in configuration files or environment va
 | `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقداری که باید در هدر `GenerationVersion` ارسال شود |
 | `Sepidar.ApiVersion` | کانفیگ یا ENV | `101` | اگر سرویس مشتری پارامتر یا هدر `api-version` می‌خواهد، این مقدار را تنظیم کنید (در صورت خالی بودن اضافه نمی‌شود) |
 | `Sepidar.RegisterPath` | کانفیگ یا ENV (اختیاری) | `api/Devices/Register/` | اگر سرویس مشتری مسیر رجیستر متفاوتی دارد این مقدار را تنظیم کنید |
-| `Sepidar.RegisterFallbackPaths[]` | کانفیگ یا ENV (اختیاری) | `api/Device/Register/` | لیست مسیرهای جایگزین در صورت خطای 404 رجیستر؛ گیت‌وی به‌طور پیش‌فرض نسخه‌های حروف کوچک و مسیر `api/Device/RegisterDevice/` را نیز امتحان می‌کند |
+| `Sepidar.RegisterFallbackPaths[]` | کانفیگ یا ENV (اختیاری) | `api/Device/Register/` | لیست مسیرهای جایگزین در صورت خطای 404 رجیستر؛ گیت‌وی به‌طور پیش‌فرض نسخه‌های حروف کوچک، `RegisterDevice` و `Devices/RegisterDevice` را نیز امتحان می‌کند و در صورت عدم موفقیت مسیرهای حاوی «register» را از Swagger کشف می‌کند |
+| `Sepidar.SwaggerDocumentPath` | کانفیگ یا ENV (اختیاری) | `swagger/sepidar/swagger.json` | اگر مستند Swagger مشتری در مسیر دیگری قرار دارد این مقدار را تغییر دهید تا کشف خودکار مسیر رجیستر عمل کند |
 | `Sepidar.LoginPath` | کانفیگ یا ENV (اختیاری) | `api/users/login/` | مسیر سفارشی لاگین در صورت تفاوت با پیش‌فرض |
 | `Sepidar.IsAuthorizedPath` | کانفیگ یا ENV (اختیاری) | `api/IsAuthorized/` | مسیر بررسی توکن؛ برای دیپلوی‌های تغییر یافته آن را ست کنید |
 | `Credentials.UserName` | ENV (مثال: `GW_T0_CREDENTIALS_USERNAME`) | `ChangeViaEnvironment` | نام کاربری Sepidar |

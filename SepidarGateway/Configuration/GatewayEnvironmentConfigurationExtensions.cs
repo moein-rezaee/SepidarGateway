@@ -30,6 +30,7 @@ public static class GatewayEnvironmentConfigurationExtensions
         ["REGISTERFALLBACKPATHS"] = "RegisterFallbackPaths",
         ["LOGINPATH"] = "LoginPath",
         ["ISAUTHORIZEDPATH"] = "IsAuthorizedPath",
+        ["SWAGGERDOCUMENTPATH"] = "SwaggerDocumentPath",
         ["CREDENTIALS"] = "Credentials",
         ["USERNAME"] = "UserName",
         ["PASSWORD"] = "Password",

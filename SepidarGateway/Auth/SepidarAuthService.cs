@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -174,50 +175,135 @@ public sealed class SepidarAuthService : ISepidarAuth
         }, SerializerOptions);
 
         var AttemptedPaths = new List<string>();
-        foreach (var RegisterPath in EnumerateRegisterPaths(tenant))
+        var ProcessedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var RegisterQueue = new Queue<string>(EnumerateRegisterPaths(tenant));
+        var DiscoveryAttempted = false;
+
+        while (true)
         {
-            AttemptedPaths.Add(RegisterPath);
-            using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, RegisterPath))
+            while (RegisterQueue.Count > 0)
             {
-                Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
-            };
+                var RegisterPath = RegisterQueue.Dequeue();
+                if (!ProcessedPaths.Add(RegisterPath))
+                {
+                    continue;
+                }
 
-            if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
-            {
-                RegisterRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+                AttemptedPaths.Add(RegisterPath);
+                using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, RegisterPath))
+                {
+                    Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
+                };
+
+                if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
+                {
+                    RegisterRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+                }
+
+                RegisterRequest.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
+                RegisterRequest.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
+
+                using var RegisterResponse = await HttpClient.SendAsync(RegisterRequest, cancellationToken).ConfigureAwait(false);
+                if (RegisterResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId}", RegisterPath, tenant.TenantId);
+                    continue;
+                }
+
+                RegisterResponse.EnsureSuccessStatusCode();
+
+                var ResponseBody = await RegisterResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var RegisterPayload = JsonSerializer.Deserialize<RegisterResponse>(ResponseBody, SerializerOptions)
+                                      ?? throw new InvalidOperationException("Invalid register response");
+
+                var PlainText = _crypto.DecryptRegisterPayload(
+                    tenant.Sepidar.DeviceSerial,
+                    RegisterPayload.Cypher,
+                    RegisterPayload.IV);
+
+                var TenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(PlainText, SerializerOptions)
+                                     ?? throw new InvalidOperationException("Invalid crypto payload");
+
+                tenant.Crypto.RsaPublicKeyXml = TenantCrypto.RsaPublicKeyXml;
+                tenant.Crypto.RsaModulusBase64 = TenantCrypto.RsaModulusBase64;
+                tenant.Crypto.RsaExponentBase64 = TenantCrypto.RsaExponentBase64;
+                return;
             }
 
-            RegisterRequest.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-            RegisterRequest.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
-
-            using var RegisterResponse = await HttpClient.SendAsync(RegisterRequest, cancellationToken).ConfigureAwait(false);
-            if (RegisterResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+            if (DiscoveryAttempted)
             {
-                _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId}", RegisterPath, tenant.TenantId);
-                continue;
+                break;
             }
 
-            RegisterResponse.EnsureSuccessStatusCode();
-
-            var ResponseBody = await RegisterResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var RegisterPayload = JsonSerializer.Deserialize<RegisterResponse>(ResponseBody, SerializerOptions)
-                                  ?? throw new InvalidOperationException("Invalid register response");
-
-            var PlainText = _crypto.DecryptRegisterPayload(
-                tenant.Sepidar.DeviceSerial,
-                RegisterPayload.Cypher,
-                RegisterPayload.IV);
-
-            var TenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(PlainText, SerializerOptions)
-                                 ?? throw new InvalidOperationException("Invalid crypto payload");
-
-            tenant.Crypto.RsaPublicKeyXml = TenantCrypto.RsaPublicKeyXml;
-            tenant.Crypto.RsaModulusBase64 = TenantCrypto.RsaModulusBase64;
-            tenant.Crypto.RsaExponentBase64 = TenantCrypto.RsaExponentBase64;
-            return;
+            DiscoveryAttempted = true;
+            var DiscoveredPaths = await DiscoverRegisterPathsAsync(tenant, cancellationToken).ConfigureAwait(false);
+            foreach (var DiscoveredPath in DiscoveredPaths.SelectMany(ExpandPathVariants))
+            {
+                if (!ProcessedPaths.Contains(DiscoveredPath))
+                {
+                    RegisterQueue.Enqueue(DiscoveredPath);
+                }
+            }
         }
 
         throw new HttpRequestException($"No register endpoint returned a successful response. Attempted: {string.Join(", ", AttemptedPaths)}");
+    }
+
+    private async Task<IEnumerable<string>> DiscoverRegisterPathsAsync(TenantOptions tenant, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var HttpClient = CreateHttpClient(tenant);
+            var SwaggerUri = BuildTenantUri(tenant, tenant.Sepidar.SwaggerDocumentPath);
+            using var SwaggerRequest = new HttpRequestMessage(HttpMethod.Get, SwaggerUri);
+            using var SwaggerResponse = await HttpClient.SendAsync(SwaggerRequest, cancellationToken).ConfigureAwait(false);
+
+            if (!SwaggerResponse.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to resolve register path from Swagger for tenant {TenantId}. Status code {StatusCode}", tenant.TenantId, (int)SwaggerResponse.StatusCode);
+                return Array.Empty<string>();
+            }
+
+            await using var SwaggerStream = await SwaggerResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var SwaggerDocument = await JsonDocument.ParseAsync(SwaggerStream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!SwaggerDocument.RootElement.TryGetProperty("paths", out var PathsElement) || PathsElement.ValueKind != JsonValueKind.Object)
+            {
+                return Array.Empty<string>();
+            }
+
+            var RegisterPaths = new List<string>();
+            foreach (var PathProperty in PathsElement.EnumerateObject())
+            {
+                var RouteName = PathProperty.Name?.Trim();
+                if (string.IsNullOrWhiteSpace(RouteName))
+                {
+                    continue;
+                }
+
+                var Normalized = RouteName.Trim('/');
+                if (Normalized.Length == 0)
+                {
+                    continue;
+                }
+
+                if (Normalized.Contains("register", StringComparison.OrdinalIgnoreCase))
+                {
+                    RegisterPaths.Add(Normalized);
+                }
+            }
+
+            if (RegisterPaths.Count > 0)
+            {
+                _logger.LogInformation("Discovered register endpoints from Swagger for tenant {TenantId}: {Paths}", tenant.TenantId, string.Join(", ", RegisterPaths));
+            }
+
+            return RegisterPaths;
+        }
+        catch (Exception DiscoveryException) when (DiscoveryException is HttpRequestException or JsonException or InvalidOperationException)
+        {
+            _logger.LogWarning(DiscoveryException, "Unable to auto-discover register endpoints for tenant {TenantId}", tenant.TenantId);
+            return Array.Empty<string>();
+        }
     }
 
     private async Task<LoginResult> LoginInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
@@ -318,6 +404,9 @@ public sealed class SepidarAuthService : ISepidarAuth
         yield return "api/Devices/Register/";
         yield return "api/Device/Register/";
         yield return "api/Device/RegisterDevice/";
+        yield return "api/Devices/RegisterDevice/";
+        yield return "api/RegisterDevice/";
+        yield return "api/Register/";
     }
 
     private static IEnumerable<string> ExpandPathVariants(string path)
