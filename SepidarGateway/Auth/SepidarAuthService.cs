@@ -29,100 +29,102 @@ public sealed class SepidarAuthService : ISepidarAuth
 
     public async Task EnsureDeviceRegisteredAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
-        var state = GetState(tenant.TenantId);
-        if (state.Registered)
+        var auth_state = GetState(tenant.TenantId);
+        if (auth_state.Registered)
         {
             return;
         }
 
-        await state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await auth_state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (state.Registered)
+            if (auth_state.Registered)
             {
                 return;
             }
 
             await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            state.Registered = true;
+            auth_state.Registered = true;
         }
         finally
         {
-            state.Lock.Release();
+            auth_state.Lock.Release();
         }
     }
 
     public async Task<string> EnsureTokenAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
-        var state = GetState(tenant.TenantId);
+        var auth_state = GetState(tenant.TenantId);
         await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
 
-        if (state.Token is { } token && state.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
+        if (auth_state.Token is { } cached_token && auth_state.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
         {
-            return token;
+            return cached_token;
         }
 
-        await state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await auth_state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (state.Token is { } cached && state.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
+            if (auth_state.Token is { } fresh_token && auth_state.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
             {
-                return cached;
+                return fresh_token;
             }
 
-            var login = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            state.Token = login.Token;
-            state.ExpiresAt = login.ExpiresAt;
-            return login.Token;
+            var login_result = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            auth_state.Token = login_result.Token;
+            auth_state.ExpiresAt = login_result.ExpiresAt;
+            return login_result.Token;
         }
         finally
         {
-            state.Lock.Release();
+            auth_state.Lock.Release();
         }
     }
 
     public async Task<bool> IsAuthorizedAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
-        var state = GetState(tenant.TenantId);
-        if (state.Token is null)
+        var auth_state = GetState(tenant.TenantId);
+        if (auth_state.Token is null)
         {
             return false;
         }
 
-        if (state.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
+        if (auth_state.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
         {
             return true;
         }
 
-        await state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await auth_state.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (state.Token is null)
+            if (auth_state.Token is null)
             {
                 return false;
             }
 
-            if (state.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
+            if (auth_state.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
             {
                 return true;
             }
 
-            var client = CreateHttpClient(tenant);
-            using var request = new HttpRequestMessage(HttpMethod.Get, BuildTenantUri(tenant, "api/IsAuthorized/"));
-            PrepareHeaders(request.Headers, tenant, state.Token);
+            var http_client = CreateHttpClient(tenant);
+            using var request_message = new HttpRequestMessage(HttpMethod.Get, BuildTenantUri(tenant, "api/IsAuthorized/"));
+            PrepareHeaders(request_message.Headers, tenant, auth_state.Token);
 
-            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            using var http_response = await http_client.SendAsync(request_message, cancellationToken).ConfigureAwait(false);
+            if (http_response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("JWT expired for tenant {TenantId}", tenant.TenantId);
                 InvalidateToken(tenant.TenantId);
                 return false;
             }
 
-            response.EnsureSuccessStatusCode();
-            var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var authorized = bool.TryParse(content, out var parsed) ? parsed : content.Contains("true", StringComparison.OrdinalIgnoreCase);
-            state.LastAuthorizationCheck = DateTimeOffset.UtcNow;
+            http_response.EnsureSuccessStatusCode();
+            var response_content = await http_response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var authorized = bool.TryParse(response_content, out var parsed_value)
+                             ? parsed_value
+                             : response_content.Contains("true", StringComparison.OrdinalIgnoreCase);
+            auth_state.LastAuthorizationCheck = DateTimeOffset.UtcNow;
             if (!authorized)
             {
                 InvalidateToken(tenant.TenantId);
@@ -132,16 +134,16 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
         finally
         {
-            state.Lock.Release();
+            auth_state.Lock.Release();
         }
     }
 
     public void InvalidateToken(string tenantId)
     {
-        if (_states.TryGetValue(tenantId, out var state))
+        if (_states.TryGetValue(tenantId, out var tenant_state))
         {
-            state.Token = null;
-            state.ExpiresAt = DateTimeOffset.MinValue;
+            tenant_state.Token = null;
+            tenant_state.ExpiresAt = DateTimeOffset.MinValue;
         }
     }
 
@@ -153,99 +155,99 @@ public sealed class SepidarAuthService : ISepidarAuth
     private async Task RegisterInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Registering Sepidar device for tenant {TenantId}", tenant.TenantId);
-        var client = CreateHttpClient(tenant);
+        var http_client = CreateHttpClient(tenant);
 
-        var payload = JsonSerializer.Serialize(new
+        var device_payload = JsonSerializer.Serialize(new
         {
             DeviceSerial = tenant.Sepidar.DeviceSerial,
             IntegrationId = tenant.Sepidar.IntegrationId,
             Timestamp = DateTimeOffset.UtcNow
         }, SerializerOptions);
 
-        var encrypted = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, payload);
-        var body = JsonSerializer.Serialize(new
+        var encrypted_payload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, device_payload);
+        var request_body = JsonSerializer.Serialize(new
         {
-            Cypher = encrypted.CipherText,
-            IV = encrypted.IvBase64,
+            Cypher = encrypted_payload.CipherText,
+            IV = encrypted_payload.IvBase64,
             DeviceSerial = tenant.Sepidar.DeviceSerial
         }, SerializerOptions);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/Devices/Register/"))
+        using var register_request = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/Devices/Register/"))
         {
-            Content = new StringContent(body, Encoding.UTF8, "application/json")
+            Content = new StringContent(request_body, Encoding.UTF8, "application/json")
         };
 
-        using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        using var register_response = await http_client.SendAsync(register_request, cancellationToken).ConfigureAwait(false);
+        register_response.EnsureSuccessStatusCode();
 
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var registerResponse = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
+        var response_body = await register_response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var register_payload = JsonSerializer.Deserialize<RegisterResponse>(response_body, SerializerOptions)
                               ?? throw new InvalidOperationException("Invalid register response");
 
-        var plaintext = _crypto.DecryptRegisterPayload(
+        var plain_text = _crypto.DecryptRegisterPayload(
             tenant.Sepidar.DeviceSerial,
-            registerResponse.Cypher,
-            registerResponse.IV);
+            register_payload.Cypher,
+            register_payload.IV);
 
-        var crypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plaintext, SerializerOptions)
-                     ?? throw new InvalidOperationException("Invalid crypto payload");
+        var tenant_crypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plain_text, SerializerOptions)
+                             ?? throw new InvalidOperationException("Invalid crypto payload");
 
-        tenant.Crypto.RsaPublicKeyXml = crypto.RsaPublicKeyXml;
-        tenant.Crypto.RsaModulusBase64 = crypto.RsaModulusBase64;
-        tenant.Crypto.RsaExponentBase64 = crypto.RsaExponentBase64;
+        tenant.Crypto.RsaPublicKeyXml = tenant_crypto.RsaPublicKeyXml;
+        tenant.Crypto.RsaModulusBase64 = tenant_crypto.RsaModulusBase64;
+        tenant.Crypto.RsaExponentBase64 = tenant_crypto.RsaExponentBase64;
     }
 
     private async Task<LoginResult> LoginInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Logging in tenant {TenantId}", tenant.TenantId);
-        var client = CreateHttpClient(tenant);
-        var arbitraryCode = Guid.NewGuid().ToString();
-        var encArbitraryCode = _crypto.EncryptArbitraryCode(arbitraryCode, tenant.Crypto);
+        var http_client = CreateHttpClient(tenant);
+        var arbitrary_code = Guid.NewGuid().ToString();
+        var encrypted_code = _crypto.EncryptArbitraryCode(arbitrary_code, tenant.Crypto);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/users/login/"));
-        request.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        request.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
-        request.Headers.Add("ArbitraryCode", arbitraryCode);
-        request.Headers.Add("EncArbitraryCode", encArbitraryCode);
+        using var login_request = new HttpRequestMessage(HttpMethod.Post, BuildTenantUri(tenant, "api/users/login/"));
+        login_request.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
+        login_request.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
+        login_request.Headers.Add("ArbitraryCode", arbitrary_code);
+        login_request.Headers.Add("EncArbitraryCode", encrypted_code);
 
-        var passwordHash = ComputePasswordHash(tenant.Credentials.Password);
+        var password_hash = ComputePasswordHash(tenant.Credentials.Password);
 
-        var loginPayload = JsonSerializer.Serialize(new
+        var login_payload = JsonSerializer.Serialize(new
         {
             UserName = tenant.Credentials.UserName,
-            PasswordHash = passwordHash
+            PasswordHash = password_hash
         }, SerializerOptions);
-        request.Content = new StringContent(loginPayload, Encoding.UTF8, "application/json");
+        login_request.Content = new StringContent(login_payload, Encoding.UTF8, "application/json");
 
-        using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
+        using var login_response_message = await http_client.SendAsync(login_request, cancellationToken).ConfigureAwait(false);
+        if (login_response_message.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
         {
             throw new InvalidOperationException("Generation version mismatch");
         }
 
-        response.EnsureSuccessStatusCode();
-        var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var loginResponse = JsonSerializer.Deserialize<LoginResponse>(content, SerializerOptions)
+        login_response_message.EnsureSuccessStatusCode();
+        var response_content = await login_response_message.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var login_response = JsonSerializer.Deserialize<LoginResponse>(response_content, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
-        var expires = DateTimeOffset.UtcNow.AddSeconds(Math.Min(
+        var token_expiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(
             tenant.Jwt.CacheSeconds,
-            loginResponse.ExpiresIn > 0 ? loginResponse.ExpiresIn : tenant.Jwt.CacheSeconds));
+            login_response.ExpiresIn > 0 ? login_response.ExpiresIn : tenant.Jwt.CacheSeconds));
 
-        return new LoginResult(loginResponse.Token, expires);
+        return new LoginResult(login_response.Token, token_expiry);
     }
 
     private HttpClient CreateHttpClient(TenantOptions tenant)
     {
-        var client = _httpClientFactory.CreateClient("SepidarAuth");
-        client.Timeout = TimeSpan.FromSeconds(tenant.Limits.RequestTimeoutSeconds);
-        return client;
+        var http_client = _httpClientFactory.CreateClient("SepidarAuth");
+        http_client.Timeout = TimeSpan.FromSeconds(tenant.Limits.RequestTimeoutSeconds);
+        return http_client;
     }
 
     private Uri BuildTenantUri(TenantOptions tenant, string relativePath)
     {
-        var baseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        return new Uri(baseUri, relativePath);
+        var base_uri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+        return new Uri(base_uri, relativePath);
     }
 
     private void PrepareHeaders(HttpRequestHeaders headers, TenantOptions tenant, string token)
@@ -258,16 +260,16 @@ public sealed class SepidarAuthService : ISepidarAuth
 
     private static string ComputePasswordHash(string password)
     {
-        using var md5 = MD5.Create();
-        var bytes = Encoding.UTF8.GetBytes(password ?? string.Empty);
-        var hash = md5.ComputeHash(bytes);
-        var builder = new StringBuilder(hash.Length * 2);
-        foreach (var b in hash)
+        using var md5_hash = MD5.Create();
+        var password_bytes = Encoding.UTF8.GetBytes(password ?? string.Empty);
+        var hash_bytes = md5_hash.ComputeHash(password_bytes);
+        var hash_builder = new StringBuilder(hash_bytes.Length * 2);
+        foreach (var hash_byte in hash_bytes)
         {
-            builder.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+            hash_builder.Append(hash_byte.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        return builder.ToString();
+        return hash_builder.ToString();
     }
 
     private sealed record RegisterResponse(string Cypher, string IV);

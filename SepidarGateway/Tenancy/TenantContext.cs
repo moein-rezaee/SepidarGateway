@@ -36,8 +36,8 @@ internal sealed class TenantContextAccessor : ITenantContextAccessor
     public TenantContext? CurrentTenant
     {
         get => _currentTenant ??
-               (_httpContextAccessor.HttpContext?.Items.TryGetValue(TenantKey, out var value) == true
-                   ? value as TenantContext
+               (_httpContextAccessor.HttpContext?.Items.TryGetValue(TenantKey, out var tenant_value) == true
+                   ? tenant_value as TenantContext
                    : null);
         set
         {
@@ -63,12 +63,12 @@ internal sealed class TenantResolver : ITenantResolver
 
     public TenantOptions? Resolve(HttpContext context)
     {
-        var gatewayOptions = _optionsMonitor.CurrentValue;
-        foreach (var tenant in gatewayOptions.Tenants)
+        var gateway_options = _optionsMonitor.CurrentValue;
+        foreach (var tenant_option in gateway_options.Tenants)
         {
-            if (IsMatch(tenant, context))
+            if (IsMatch(tenant_option, context))
             {
-                return tenant;
+                return tenant_option;
             }
         }
 
@@ -77,49 +77,49 @@ internal sealed class TenantResolver : ITenantResolver
 
     private static bool IsMatch(TenantOptions tenant, HttpContext context)
     {
-        var match = tenant.Match;
-        if (match.Hostnames is { Length: > 0 })
+        var tenant_match = tenant.Match;
+        if (tenant_match.Hostnames is { Length: > 0 })
         {
-            var host = context.Request.Host.Host;
-            if (!match.Hostnames.Any(h => string.Equals(h, host, StringComparison.OrdinalIgnoreCase)))
+            var request_host = context.Request.Host.Host;
+            if (!tenant_match.Hostnames.Any(h => string.Equals(h, request_host, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
         }
 
-        if (match.Header is { } header &&
-            !string.IsNullOrWhiteSpace(header.HeaderName) &&
-            header.HeaderValues is { Length: > 0 })
+        if (tenant_match.Header is { } header_rule &&
+            !string.IsNullOrWhiteSpace(header_rule.HeaderName) &&
+            header_rule.HeaderValues is { Length: > 0 })
         {
-            if (!context.Request.Headers.TryGetValue(header.HeaderName, out var values))
+            if (!context.Request.Headers.TryGetValue(header_rule.HeaderName, out var header_value_span))
             {
                 return false;
             }
 
-            var headerValues = values.ToArray();
-            var requestValues = headerValues.Length == 0
+            var header_values = header_value_span.ToArray();
+            var request_values = header_values.Length == 0
                 ? Array.Empty<string>()
-                : headerValues
+                : header_values
                     .Select(v => v?.Trim())
                     .Where(v => !string.IsNullOrWhiteSpace(v))
                     .Select(v => v!)
                     .ToArray();
-            if (!header.HeaderValues.Any(expected =>
-                    requestValues.Any(actual => string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))))
+            if (!header_rule.HeaderValues.Any(expected =>
+                    request_values.Any(actual => string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))))
             {
                 return false;
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(match.PathBase) && match.PathBase != "/" && context.Request.Path.HasValue)
+        if (!string.IsNullOrWhiteSpace(tenant_match.PathBase) && tenant_match.PathBase != "/" && context.Request.Path.HasValue)
         {
-            if (!context.Request.Path.StartsWithSegments(match.PathBase, out var remaining))
+            if (!context.Request.Path.StartsWithSegments(tenant_match.PathBase, out var path_remaining))
             {
                 return false;
             }
 
-            context.Request.PathBase = match.PathBase;
-            context.Request.Path = remaining;
+            context.Request.PathBase = tenant_match.PathBase;
+            context.Request.Path = path_remaining;
         }
 
         return true;
@@ -147,20 +147,20 @@ public sealed class TenantContextMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        var tenant = _resolver.Resolve(context);
-        if (tenant == null)
+        var tenant_option = _resolver.Resolve(context);
+        if (tenant_option == null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsync("Tenant not found");
             return;
         }
 
-        var tenantContext = new TenantContext(tenant);
-        _accessor.CurrentTenant = tenantContext;
+        var tenant_context = new TenantContext(tenant_option);
+        _accessor.CurrentTenant = tenant_context;
 
         using (_logger.BeginScope(new Dictionary<string, object>
                {
-                   ["TenantId"] = tenant.TenantId
+                   ["TenantId"] = tenant_option.TenantId
                }))
         {
             await _next(context);

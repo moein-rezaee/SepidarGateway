@@ -37,60 +37,60 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         _gatewayOptions = options.Value;
     }
 
-    public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
+    public void Apply(OpenApiDocument swagger_doc, DocumentFilterContext context)
     {
         if (_gatewayOptions.Ocelot?.Routes == null || _gatewayOptions.Ocelot.Routes.Count == 0)
         {
             return;
         }
 
-        swaggerDoc.Paths ??= new OpenApiPaths();
-        var existingOperations = new HashSet<(string Path, OperationType Operation)>();
+        swagger_doc.Paths ??= new OpenApiPaths();
+        var existing_operations = new HashSet<(string Path, OperationType Operation)>();
 
-        foreach (var route in _gatewayOptions.Ocelot.Routes)
+        foreach (var route_config in _gatewayOptions.Ocelot.Routes)
         {
-            var normalizedPath = NormalizePath(route.UpstreamPathTemplate);
-            if (string.IsNullOrWhiteSpace(normalizedPath))
+            var normalized_path = NormalizePath(route_config.UpstreamPathTemplate);
+            if (string.IsNullOrWhiteSpace(normalized_path))
             {
                 continue;
             }
 
-            if (!swaggerDoc.Paths.TryGetValue(normalizedPath, out var pathItem))
+            if (!swagger_doc.Paths.TryGetValue(normalized_path, out var path_item))
             {
-                pathItem = new OpenApiPathItem();
-                swaggerDoc.Paths[normalizedPath] = pathItem;
+                path_item = new OpenApiPathItem();
+                swagger_doc.Paths[normalized_path] = path_item;
             }
 
-            var tag = DeriveTag(normalizedPath);
-            var methods = route.UpstreamHttpMethod?.Count > 0
-                ? route.UpstreamHttpMethod
+            var route_tag = DeriveTag(normalized_path);
+            var upstream_methods = route_config.UpstreamHttpMethod?.Count > 0
+                ? route_config.UpstreamHttpMethod
                 : new List<string> { "GET" };
 
-            foreach (var method in methods)
+            foreach (var http_method in upstream_methods)
             {
-                if (string.IsNullOrWhiteSpace(method) || !Enum.TryParse<OperationType>(method, true, out var operationType))
+                if (string.IsNullOrWhiteSpace(http_method) || !Enum.TryParse<OperationType>(http_method, true, out var operation_type))
                 {
                     continue;
                 }
 
-                if (!existingOperations.Add((normalizedPath, operationType)))
+                if (!existing_operations.Add((normalized_path, operation_type)))
                 {
                     continue;
                 }
 
-                var operation = BuildOperation(route, normalizedPath, tag);
-                pathItem.Operations[operationType] = operation;
+                var gateway_operation = BuildOperation(route_config, normalized_path, route_tag);
+                path_item.Operations[operation_type] = gateway_operation;
             }
         }
     }
 
-    private static OpenApiOperation BuildOperation(RouteConfig route, string normalizedPath, string tag)
+    private static OpenApiOperation BuildOperation(RouteConfig route_config, string normalized_path, string route_tag)
     {
-        var operation = new OpenApiOperation
+        var gateway_operation = new OpenApiOperation
         {
-            Summary = $"Proxy {string.Join(", ", route.UpstreamHttpMethod ?? new List<string> { "GET" })} {normalizedPath}",
-            Description = $"Forwards the request to Sepidar endpoint `{route.DownstreamPathTemplate}`.",
-            Tags = new List<OpenApiTag> { new() { Name = tag } },
+            Summary = $"Proxy {string.Join(", ", route_config.UpstreamHttpMethod ?? new List<string> { "GET" })} {normalized_path}",
+            Description = $"Forwards the request to Sepidar endpoint `{route_config.DownstreamPathTemplate}`.",
+            Tags = new List<OpenApiTag> { new() { Name = route_tag } },
             Responses = new OpenApiResponses
             {
                 ["200"] = new OpenApiResponse
@@ -116,11 +116,11 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             }
         };
 
-        foreach (var parameterName in ExtractPathParameters(normalizedPath))
+        foreach (var parameter_name in ExtractPathParameters(normalized_path))
         {
-            operation.Parameters.Add(new OpenApiParameter
+            gateway_operation.Parameters.Add(new OpenApiParameter
             {
-                Name = parameterName,
+                Name = parameter_name,
                 In = ParameterLocation.Path,
                 Required = true,
                 Schema = new OpenApiSchema { Type = "string" },
@@ -128,51 +128,51 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             });
         }
 
-        return operation;
+        return gateway_operation;
     }
 
-    private static string NormalizePath(string path)
+    private static string NormalizePath(string route_path)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(route_path))
         {
             return string.Empty;
         }
 
-        var trimmed = path.Trim();
-        if (!trimmed.StartsWith('/'))
+        var trimmed_path = route_path.Trim();
+        if (!trimmed_path.StartsWith('/'))
         {
-            trimmed = "/" + trimmed;
+            trimmed_path = "/" + trimmed_path;
         }
 
-        while (trimmed.Contains("//", StringComparison.Ordinal))
+        while (trimmed_path.Contains("//", StringComparison.Ordinal))
         {
-            trimmed = trimmed.Replace("//", "/", StringComparison.Ordinal);
+            trimmed_path = trimmed_path.Replace("//", "/", StringComparison.Ordinal);
         }
 
-        return trimmed;
+        return trimmed_path;
     }
 
-    private static IEnumerable<string> ExtractPathParameters(string path)
+    private static IEnumerable<string> ExtractPathParameters(string route_path)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match match in PathParameterRegex.Matches(path))
+        var seen_parameters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match parameter_match in PathParameterRegex.Matches(route_path))
         {
-            var name = match.Groups["name"].Value;
-            if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
+            var parameter_name = parameter_match.Groups["name"].Value;
+            if (!string.IsNullOrWhiteSpace(parameter_name) && seen_parameters.Add(parameter_name))
             {
-                yield return name;
+                yield return parameter_name;
             }
         }
     }
 
-    private static string DeriveTag(string path)
+    private static string DeriveTag(string route_path)
     {
-        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var segment in segments)
+        var path_segments = route_path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var path_segment in path_segments)
         {
-            if (!segment.Equals("api", StringComparison.OrdinalIgnoreCase))
+            if (!path_segment.Equals("api", StringComparison.OrdinalIgnoreCase))
             {
-                return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(segment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal));
+                return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(path_segment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal));
             }
         }
 

@@ -13,23 +13,24 @@ public sealed class ClientAuthorizationMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext context, ITenantContextAccessor tenantAccessor)
+    public async Task InvokeAsync(HttpContext context, ITenantContextAccessor tenant_accessor)
     {
-        var tenant = tenantAccessor.CurrentTenant;
-        if (tenant?.Options.Clients?.ApiKeys is { Length: > 0 })
+        var tenant_context = tenant_accessor.CurrentTenant;
+        if (tenant_context?.Options.Clients?.ApiKeys is { Length: > 0 })
         {
-            if (!context.Request.Headers.TryGetValue("X-API-Key", out var provided) ||
-                string.IsNullOrWhiteSpace(provided))
+            if (!context.Request.Headers.TryGetValue("X-API-Key", out var api_key_value) ||
+                string.IsNullOrWhiteSpace(api_key_value))
             {
-                _logger.LogWarning("Missing API key for tenant {TenantId}", tenant.Options.TenantId);
+                _logger.LogWarning("Missing API key for tenant {TenantId}", tenant_context.Options.TenantId);
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 await context.Response.WriteAsync("Missing API key");
                 return;
             }
 
-            if (!tenant.Options.Clients.ApiKeys.Any(k => string.Equals(k, provided.ToString(), StringComparison.Ordinal)))
+            if (!tenant_context.Options.Clients.ApiKeys.Any(configured_key =>
+                    string.Equals(configured_key, api_key_value.ToString(), StringComparison.Ordinal)))
             {
-                _logger.LogWarning("Invalid API key for tenant {TenantId}", tenant.Options.TenantId);
+                _logger.LogWarning("Invalid API key for tenant {TenantId}", tenant_context.Options.TenantId);
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 await context.Response.WriteAsync("Invalid API key");
                 return;

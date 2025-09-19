@@ -16,46 +16,46 @@ public sealed class TenantCorsPolicyProvider : ICorsPolicyProvider
 
     public Task<CorsPolicy?> GetPolicyAsync(HttpContext context, string? policyName)
     {
-        var tenant = _tenantAccessor.CurrentTenant?.Options;
-        var builder = new CorsPolicyBuilder();
+        var tenant_options = _tenantAccessor.CurrentTenant?.Options;
+        var cors_builder = new CorsPolicyBuilder();
 
-        if (tenant?.Cors?.AllowedOrigins is { Length: > 0 })
+        if (tenant_options?.Cors?.AllowedOrigins is { Length: > 0 })
         {
-            builder.WithOrigins(tenant.Cors.AllowedOrigins);
+            cors_builder.WithOrigins(tenant_options.Cors.AllowedOrigins);
         }
         else
         {
-            builder.AllowAnyOrigin();
+            cors_builder.AllowAnyOrigin();
         }
 
-        if (tenant?.Cors?.AllowedHeaders is { Length: > 0 })
+        if (tenant_options?.Cors?.AllowedHeaders is { Length: > 0 })
         {
-            builder.WithHeaders(tenant.Cors.AllowedHeaders);
+            cors_builder.WithHeaders(tenant_options.Cors.AllowedHeaders);
         }
         else
         {
-            builder.AllowAnyHeader();
+            cors_builder.AllowAnyHeader();
         }
 
-        if (tenant?.Cors?.AllowedMethods is { Length: > 0 })
+        if (tenant_options?.Cors?.AllowedMethods is { Length: > 0 })
         {
-            builder.WithMethods(tenant.Cors.AllowedMethods);
+            cors_builder.WithMethods(tenant_options.Cors.AllowedMethods);
         }
         else
         {
-            builder.AllowAnyMethod();
+            cors_builder.AllowAnyMethod();
         }
 
-        if (tenant?.Cors?.AllowCredentials == true)
+        if (tenant_options?.Cors?.AllowCredentials == true)
         {
-            builder.AllowCredentials();
+            cors_builder.AllowCredentials();
         }
 
-        var policy = builder.Build();
-        if (tenant is not null)
+        var cors_policy = cors_builder.Build();
+        if (tenant_options is not null)
         {
-            _logger.LogDebug("Applied CORS policy for tenant {TenantId}", tenant.TenantId);
+            _logger.LogDebug("Applied CORS policy for tenant {TenantId}", tenant_options.TenantId);
         }
-        return Task.FromResult<CorsPolicy?>(policy);
+        return Task.FromResult<CorsPolicy?>(cors_policy);
     }
 }

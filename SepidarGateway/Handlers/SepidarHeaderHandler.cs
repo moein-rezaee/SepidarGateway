@@ -31,17 +31,17 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var tenant = _tenantAccessor.CurrentTenant?.Options;
-        if (tenant is null)
+        var tenant_options = _tenantAccessor.CurrentTenant?.Options;
+        if (tenant_options is null)
         {
             throw new InvalidOperationException("Tenant context missing for downstream request");
         }
 
-        if (request.RequestUri is { } originalUri)
+        if (request.RequestUri is { } original_uri)
         {
-            var baseUri = new Uri(tenant.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-            var downstreamUri = new Uri(baseUri, originalUri.PathAndQuery.TrimStart('/'));
-            request.RequestUri = downstreamUri;
+            var base_uri = new Uri(tenant_options.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+            var downstream_uri = new Uri(base_uri, original_uri.PathAndQuery.TrimStart('/'));
+            request.RequestUri = downstream_uri;
         }
 
         request.Headers.Remove("GenerationVersion");
@@ -49,13 +49,13 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         request.Headers.Remove("ArbitraryCode");
         request.Headers.Remove("EncArbitraryCode");
 
-        request.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        request.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
+        request.Headers.TryAddWithoutValidation("GenerationVersion", tenant_options.Sepidar.GenerationVersion);
+        request.Headers.TryAddWithoutValidation("IntegrationID", tenant_options.Sepidar.IntegrationId);
 
-        var arbitraryCode = Guid.NewGuid().ToString();
-        var encArbitraryCode = _crypto.EncryptArbitraryCode(arbitraryCode, tenant.Crypto);
-        request.Headers.TryAddWithoutValidation("ArbitraryCode", arbitraryCode);
-        request.Headers.TryAddWithoutValidation("EncArbitraryCode", encArbitraryCode);
+        var arbitrary_code = Guid.NewGuid().ToString();
+        var encrypted_code = _crypto.EncryptArbitraryCode(arbitrary_code, tenant_options.Crypto);
+        request.Headers.TryAddWithoutValidation("ArbitraryCode", arbitrary_code);
+        request.Headers.TryAddWithoutValidation("EncArbitraryCode", encrypted_code);
 
         if (request.Headers.Contains("Authorization"))
         {
@@ -64,24 +64,24 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
 
         try
         {
-            var token = await _auth.EnsureTokenAsync(tenant, cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(token))
+            var jwt_token = await _auth.EnsureTokenAsync(tenant_options, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(jwt_token))
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt_token);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to ensure JWT for tenant {TenantId}", tenant.TenantId);
+            _logger.LogError(ex, "Failed to ensure JWT for tenant {TenantId}", tenant_options.TenantId);
             throw;
         }
 
-        _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", tenant.TenantId, request.RequestUri);
+        _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", tenant_options.TenantId, request.RequestUri);
 
-        var correlationId = _httpContextAccessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] as string;
-        if (!string.IsNullOrWhiteSpace(correlationId))
+        var correlation_id = _httpContextAccessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] as string;
+        if (!string.IsNullOrWhiteSpace(correlation_id))
         {
-            request.Headers.TryAddWithoutValidation(CorrelationIdMiddleware.HeaderName, correlationId);
+            request.Headers.TryAddWithoutValidation(CorrelationIdMiddleware.HeaderName, correlation_id);
         }
 
         return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
