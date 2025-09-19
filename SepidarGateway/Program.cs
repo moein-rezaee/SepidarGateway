@@ -3,8 +3,6 @@ using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
-using Serilog;
-using Serilog.Formatting.Compact;
 using SepidarGateway.Auth;
 using SepidarGateway.Configuration;
 using SepidarGateway.Crypto;
@@ -20,15 +18,6 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
-
-builder.Host.UseSerilog((context, services, configuration) =>
-{
-    configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .ReadFrom.Services(services)
-        .Enrich.FromLogContext()
-        .WriteTo.Console(new RenderedCompactJsonFormatter());
-});
 
 builder.Services.AddOptions<GatewayOptions>()
     .Bind(builder.Configuration.GetSection("Gateway"))
@@ -84,8 +73,6 @@ builder.Services.AddOcelot(builder.Configuration)
     .AddDelegatingHandler<SepidarHeaderHandler>(true);
 
 var app = builder.Build();
-
-app.UseSerilogRequestLogging();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<TenantContextMiddleware>();
