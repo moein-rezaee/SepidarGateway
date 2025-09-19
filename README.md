@@ -8,7 +8,7 @@ Sepidar Gateway is a multi-tenant API Gateway-as-a-Device built on **.NET 9** an
 - ✅ **Multi-tenancy** – tenant resolution via host, header, or path base; tenant-specific CORS, rate limits, and API keys.
 - ✅ **Mandatory header injection** – `GenerationVersion`, `IntegrationID`, `ArbitraryCode`, `EncArbitraryCode`, and bearer tokens added via a delegating handler.
 - ✅ **Observability & resilience** – correlation IDs, health checks, rate limiting, and background token validation out of the box.
-- ✅ **Container ready** – Dockerfile and docker-compose for running the gateway plus a mock Sepidar backend.
+- ✅ **Container ready** – Dockerfile and docker-compose for running the gateway against Sepidar.
 
 ## Project structure
 
@@ -23,8 +23,7 @@ SepidarGateway.sln
 │   ├── Observability/         # Correlation ID helpers and diagnostics
 │   ├── Services/              # Background lifecycle services
 │   └── Tenancy/               # Tenant resolver and context
-├── SepidarGateway.Tests/      # Unit & integration tests (xUnit + WireMock.Net)
-└── docker-compose.yml         # Gateway + mock Sepidar
+└── docker-compose.yml         # Gateway container configuration
 ```
 
 ## Configuration
@@ -33,9 +32,9 @@ All customer/tenant customization lives in configuration files or environment va
 
 ### `appsettings.json`
 
-- Includes a sample tenant (`Gateway:Tenants[0]`) you can copy for each customer.
-- Lists default Ocelot routes for `/api/...` endpoints.
-- Mirrors the `Ocelot` section at the root so Ocelot can load its configuration while still being overridden through `Gateway:Ocelot`.
+- پیکربندی آمادهٔ تولید برای آدرس `http://178.131.66.32:7373` و کاربر `robat` را در `Gateway:Tenants[0]` قرار داده‌ایم.
+- تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
+- همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
 
 ### Tenant configuration schema
 
@@ -44,144 +43,115 @@ All customer/tenant customization lives in configuration files or environment va
   "Gateway": {
     "Tenants": [
       {
-        "TenantId": "tenant-code",
+        "TenantId": "main-tenant",
         "Match": {
-          "Hostnames": ["tenant.example.com"],
-          "Header": { "HeaderName": "X-Tenant-ID", "HeaderValues": ["tenant-code"] },
-          "PathBase": "/t/tenant-code"
+          "Header": { "HeaderName": "X-Tenant-ID", "HeaderValues": ["main-tenant"] },
+          "Hostnames": ["gateway.internal"],
+          "PathBase": "/t/main"
         },
         "Sepidar": {
-          "BaseUrl": "http://sepidar.internal:7373",
-          "IntegrationId": "<derived integration id>",
-          "DeviceSerial": "<device serial>",
-          "GenerationVersion": "1.0.0"
+          "BaseUrl": "http://178.131.66.32:7373",
+          "IntegrationId": "10006c18",
+          "DeviceSerial": "10006c18",
+          "GenerationVersion": "101"
         },
-        "Credentials": { "UserName": "gateway", "PasswordMd5": "<md5 hash>" },
-        "Crypto": { "RsaPublicKeyXml": "<RSA XML after registration>" },
-        "Jwt": { "CacheSeconds": 3600, "PreAuthCheckSeconds": 300 },
-        "Clients": { "ApiKeys": ["<internal service key>"] },
-        "Limits": { "RequestsPerMinute": 600, "QueueLimit": 100, "RequestTimeoutSeconds": 120 },
-        "Cors": { "AllowedOrigins": ["https://tenant.app"], "AllowCredentials": true }
+        "Credentials": {
+          "UserName": "robat",
+          "PasswordMd5": "7294a8e1350ed4228c575b9ab855de30"
+        },
+        "Crypto": {},
+        "Jwt": { "CacheSeconds": 1800, "PreAuthCheckSeconds": 300 },
+        "Clients": { "ApiKeys": [] },
+        "Limits": { "RequestsPerMinute": 120, "QueueLimit": 100, "RequestTimeoutSeconds": 60 }
       }
-    ],
-    "Ocelot": {
-      "Routes": [
-        { "UpstreamPathTemplate": "/api/Customers", "DownstreamPathTemplate": "/api/Customers", "UpstreamHttpMethod": ["GET", "POST"] },
-        { "UpstreamPathTemplate": "/api/{everything}", "DownstreamPathTemplate": "/api/{everything}", "UpstreamHttpMethod": ["GET", "POST", "PUT", "DELETE", "PATCH"] }
-      ]
-    }
+    ]
   }
 }
 ```
 
-> A ready-to-copy template is provided in [`SepidarGateway/appsettings.TenantSample.json`](SepidarGateway/appsettings.TenantSample.json).
+> الگوی کامل همراه با توضیحات فارسی برای جایگزینی مقادیر در [`SepidarGateway/appsettings.TenantSample.json`](SepidarGateway/appsettings.TenantSample.json) قرار دارد.
 
-### Add a new tenant in three steps
+### مقادیری که باید برای هر مشتری آماده و جایگزین کنید
 
-1. Duplicate the sample tenant object in `appsettings.{Environment}.json` (or set the equivalent `Gateway__Tenants__{i}__...` environment variables).
-2. Update the Sepidar credentials, serial number, and matching strategy (host/header/path).
-3. Provide the RSA public key obtained from the `RegisterDevice` flow (first run logs the key so you can copy it into configuration or a secret store).
+| مقدار | محل تنظیم | مقدار فعلی در سورس | از کجا تهیه شود |
+| --- | --- | --- | --- |
+| `TenantId` | `Gateway:Tenants[].TenantId` و `Gateway__Tenants__0__TenantId` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
+| رزولوشن تننت | `Gateway:Tenants[].Match` یا متغیرهای ENV متناظر | Header `X-Tenant-ID = main-tenant` + Host `gateway.internal` + Path `/t/main` | بر اساس معماری شما (Host، Header یا PathBase) |
+| `Sepidar.BaseUrl` | کانفیگ یا ENV | `http://178.131.66.32:7373` | آدرس سرور Sepidar مشتری |
+| `Sepidar.IntegrationId` | کانفیگ یا ENV | `10006c18` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
+| `Sepidar.DeviceSerial` | کانفیگ یا ENV | `10006c18` | سریال دستگاه ثبت‌شده در Sepidar |
+| `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
+| `Credentials.UserName` | کانفیگ یا ENV | `robat` | نام کاربری Sepidar |
+| `Credentials.PasswordMd5` | کانفیگ یا ENV | `7294a8e1350ed4228c575b9ab855de30` | هش MD5 پسورد (مثال: `printf "89757" | md5sum`) |
+| `Crypto.RsaPublicKeyXml` | کانفیگ یا ENV | تهی (در شروع) | پس از اولین `RegisterDevice` در پاسخ Sepidar ذخیره کنید |
+| `Jwt.CacheSeconds` و `PreAuthCheckSeconds` | کانفیگ یا ENV | `1800` و `300` | بر اساس سیاست تمدید توکن قابل تغییر است |
+| `Limits.RequestsPerMinute`، `QueueLimit`، `RequestTimeoutSeconds` | کانفیگ یا ENV | `120`، `100`، `60` | با سیاست نرخ‌دهی داخلی هماهنگ کنید |
 
-No code changes are required – configuration reloads are supported.
+### گام‌های آماده‌سازی کانفیگ برای مشتری جدید
 
-## Step-by-step: configure and run the gateway
+1. فایل `SepidarGateway/appsettings.TenantSample.json` را کپی کنید و در فایل محیطی خود (مثل `appsettings.Production.json`) قرار دهید.
+2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، همان مقادیر را در `docker-compose.yml` نیز بروزرسانی کنید (راهنما کنار هر خط نوشته شده است).
+3. اولین بار که گیت‌وی اجرا می‌شود و عملیات `RegisterDevice` موفق باشد، مقادیر `RsaPublicKeyXml`، `RsaModulusBase64` و `RsaExponentBase64` در لاگ چاپ می‌شود؛ آن‌ها را در بخش `Crypto` ذخیره کنید تا دفعه بعد نیازی به رجیستر مجدد نباشد.
+4. در صورت نیاز، API Key یا تنظیمات CORS را برای مشتری فعال کنید (آرایه‌ها را خالی گذاشته‌ایم تا اختیاری باشند).
 
-1. **Install .NET 9 SDK.** If you do not already have it, use `dotnet-install.sh` or the official Microsoft installers.
-2. **Copy the sample configuration.** Duplicate `SepidarGateway/appsettings.TenantSample.json` into `appsettings.Development.json` (or another environment-specific file) and adjust the tenant entry for each customer.
-3. **Fill in the required tenant values.** Use the reference in the next section to gather the correct Integration ID, serial number, credentials, and API keys.
-4. **Optionally move secrets to environment variables.** Every setting can be provided as `Gateway__Tenants__{index}__...` environment variables when deploying.
-5. **Restore and build.** From the repository root run `dotnet build`.
-6. **Run the gateway.** Change into the `SepidarGateway` folder and execute `dotnet run`. The gateway starts on `http://localhost:5000` unless you override `ASPNETCORE_URLS`.
-7. **Capture the RSA key the first time.** If `Gateway:Tenants[].Crypto` is empty, the first successful registration logs the RSA key information. Copy `RsaPublicKeyXml`, `RsaModulusBase64`, and `RsaExponentBase64` into configuration for future runs.
-8. **Point your internal clients at the gateway.** They send requests to `/api/...` on the gateway host with the tenant identifier (host/header/path) and an optional `X-API-Key` if you configured API keys.
-
-## Where to get each configuration value
-
-| Setting | Where it comes from | Notes |
-| --- | --- | --- |
-| `TenantId` | Your own short identifier for the customer | Used in logs and rate-limiter partitioning. |
-| `Match.Hostnames[]` | Public/private hostnames you control | Requests whose `Host` header matches use this tenant. Leave empty if not matching by host. |
-| `Match.Header.HeaderName` & `HeaderValues[]` | Internal client contract | Provide the header name/value pair your internal callers will send (default `X-Tenant-ID`). |
-| `Match.PathBase` | Gateway URL design | Optional base path prefix such as `/t/<tenant>`. Leave `/` to disable path-based matching. |
-| `Sepidar.BaseUrl` | Sepidar E-Commerce API endpoint provided by Sepidar | Use the base address (e.g. `https://sepidar.company.local`) that exposes `/api/...`. |
-| `Sepidar.IntegrationId` | Supplied by Sepidar when your device serial is provisioned | In Sepidar’s documentation the Integration ID is derived from the registered device; request it from Sepidar support if unknown. |
-| `Sepidar.DeviceSerial` | The Sepidar device serial assigned to your integration | Appears in the Sepidar portal or paperwork for the registered device. |
-| `Sepidar.GenerationVersion` | Result of `GET api/General/GenerationVersion/` on Sepidar | Keep in sync; the gateway forwards it on each request and treats 412 as a version mismatch. |
-| `Credentials.UserName` | Sepidar service account | Create or reuse a dedicated Sepidar user for the gateway. |
-| `Credentials.PasswordMd5` | MD5 hash of the Sepidar user password | Generate with e.g. `echo -n "<password>" | md5sum` and copy the hex string (uppercase or lowercase accepted). |
-| `Crypto.RsaPublicKeyXml`/`RsaModulusBase64`/`RsaExponentBase64` | Returned by `POST api/Devices/Register/` | Leave empty on the first run; once registration succeeds copy the logged values back into configuration or secrets. |
-| `Jwt.CacheSeconds` & `PreAuthCheckSeconds` | Your desired token caching policy | Determines how long the JWT is reused and when `/api/IsAuthorized/` is polled. |
-| `Clients.ApiKeys[]` | Keys you issue to internal callers | Optional – if populated, callers must send `X-API-Key` with one of these values. |
-| `Limits.*` | Your throttling requirements | Controls per-tenant rate limiting and request timeout. |
-| `Cors.*` | Front-end origins that should call the gateway | Configure origins/headers/methods per tenant; leave arrays empty to block browser origins. |
-| `Gateway.Ocelot.Routes` | Mapping of Sepidar endpoints | Extend or override with every Sepidar API route you need to expose. |
-
-## Running locally
+## اجرای محلی و تست اولیه
 
 ```bash
 # Restore & build
 export PATH="$HOME/.dotnet:$PATH"
 dotnet build
 
-# Run the gateway
+# Run the gateway (locally on port 8080)
 cd SepidarGateway
-dotnet run
+ASPNETCORE_URLS=http://localhost:8080 dotnet run
 ```
 
-The gateway listens on `http://localhost:5000` by default. An internal client only needs to call the gateway:
+With the bundled configuration the gateway will listen on `http://localhost:8080`. یک درخواست ساده از کلاینت داخلی به شکل زیر است:
 
 ```http
 GET /api/Customers HTTP/1.1
-Host: localhost:5000
-X-Tenant-ID: sample
-X-API-Key: local-development-key
+Host: localhost:8080
+X-Tenant-ID: main-tenant
 ```
 
-The gateway will ensure the Sepidar headers (`GenerationVersion`, `IntegrationID`, `ArbitraryCode`, `EncArbitraryCode`) and bearer token are attached before proxying the request.
+پس از بالا آمدن سرویس، برای اطمینان از صحت اجرا این گام‌ها را انجام دهید:
+
+1. سلامت گیت‌وی را بررسی کنید: `curl http://localhost:8080/health/ready` باید وضعیت `Healthy` برگرداند.
+2. یک درخواست واقعی به سپیدار بفرستید (مثال همگام‌سازی نسخه):
+   ```bash
+   curl -H "X-Tenant-ID: main-tenant" http://localhost:8080/api/General/GenerationVersion/
+   ```
+   اگر مقادیر کانفیگ درست باشد، پاسخ 200 با مقدار نسخه (`101`) برمی‌گردد؛ در صورت خطای 412 نسخه سپیدار را بررسی و به‌روزرسانی کنید.
+3. در لاگ‌های گیت‌وی مطمئن شوید عملیات `RegisterDevice` تنها بار اول انجام شده و سپس JWT کش می‌شود.
+
+گیت‌وی تمامی هدرهای اجباری Sepidar (`GenerationVersion`, `IntegrationID`, `ArbitraryCode`, `EncArbitraryCode`) و توکن احراز هویت را قبل از ارسال به مقصد `http://178.131.66.32:7373` اضافه می‌کند.
 
 ### Swagger & API explorer
 
-- Browse to [`http://localhost:5000/swagger`](http://localhost:5000/swagger) while the gateway is running to open the interactive documentation.
-- The OpenAPI document is generated from `Gateway:Ocelot:Routes`, so any new Sepidar endpoint you add to configuration is immediately reflected.
-- Use the **Authorize** button in Swagger UI to provide `X-Tenant-ID` and `X-API-Key` values; the UI stores them and includes the headers in "Try it out" requests through the gateway.
-- The generated operations document typical Sepidar responses (`200`, `401`, `412`) so clients understand how errors are surfaced through the proxy.
+- Swagger UI در نشانی [`http://localhost:8080/swagger`](http://localhost:8080/swagger) در دسترس است.
+- مستندات OpenAPI مستقیماً از `Gateway:Ocelot:Routes` ساخته می‌شود؛ هر مسیری که در کانفیگ اضافه کنید، بلافاصله در Swagger دیده می‌شود.
+- در پنجره Authorize فقط هدر `X-Tenant-ID` (مثال: `main-tenant`) را وارد کنید تا درخواست‌های "Try it out" از طریق همان تننت ارسال شود.
+- تب "Schemas" فهرست پاسخ‌های متداول Sepidar (`200`، `401`، `412`) را نشان می‌دهد تا رفتار خطاها مشخص باشد.
 
 ## Docker
-
-A production-ready image is provided:
 
 ```bash
 # Build the gateway image
 docker build -t sepidar-gateway .
 
-# Run gateway + mock Sepidar
+# Start the container on port 8080
 docker compose up --build
 ```
 
-- `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5000**.
-- `docker-compose.yml` wires the gateway to a mock Sepidar service, sets environment overrides for a sample tenant, and defines `/health/live` + `/health/ready` health checks.
-
-## Testing
-
-```bash
-# Run all unit + integration tests
-export PATH="$HOME/.dotnet:$PATH"
-dotnet test
-```
-
-Test coverage includes:
-
-- AES/RSA registration crypto round-trip.
-- Arbitrary code RSA encryption for the `EncArbitraryCode` header.
-- JWT caching & re-use (`SepidarAuthService`).
-- Tenant resolution via header/path combinations.
-- Integration test using WireMock.Net validating forwarded Sepidar headers and authorization.
+- `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **8080**.
+- `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
+- Override any environment variable in `docker-compose.yml` to run the gateway for an additional customer.
 
 ## Security notes
 
-- Internal clients must present a valid `X-API-Key` per tenant.
-- CORS policies are evaluated per tenant.
-- Sensitive secrets (integration IDs, RSA keys, passwords) should be provided via environment variables or secret stores – never commit them to source control.
+- اگر برای مشتری‌ای API Key تعریف کردید، کلاینت داخلی باید `X-API-Key` متناظر را ارسال کند؛ در غیر این صورت این هدر اختیاری است.
+- سیاست‌های CORS برای هر تننت جداگانه اعمال می‌شود.
+- مقادیر حساس (IntegrationID، سریال، رمزها، کلید RSA) را حتماً از طریق ENV یا Secret Store تأمین کنید و در سورس کنترل قرار ندهید.
 
 ## Further customization
 
