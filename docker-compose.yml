@@ -6,17 +6,8 @@ services:
     image: sepidar-gateway:latest
     ports:
       - "5259:5259" # نگاشت پورت کانتینر (پورت گیت‌وی) به پورت میزبان مورد نظر
-    environment:
-      ASPNETCORE_ENVIRONMENT: Production # در صورت نیاز به محیط دیگر (Development/Staging) جایگزین کنید
-      Gateway__Tenants__0__TenantId: main-tenant # برای هر مشتری یک شناسه یکتا وارد کنید
-      Gateway__Tenants__0__Match__Header__HeaderName: X-Tenant-ID # اگر رزولوشن تننت با Host یا PathBase است این مقدار را تغییر دهید
-      Gateway__Tenants__0__Match__Header__HeaderValues__0: main-tenant # مقدار هدر ارسالی از کلاینت داخلی برای انتخاب تننت
-      Gateway__Tenants__0__Sepidar__BaseUrl: http://178.131.66.32:7373 # آدرس و پورت سرویس سپیدار مشتری
-      Gateway__Tenants__0__Sepidar__IntegrationId: 10006c18 # آیدی انتگره‌شن محاسبه‌شده از سریال دستگاه مشتری
-      Gateway__Tenants__0__Sepidar__DeviceSerial: 10006c18 # سریال دستگاه ثبت‌شده در سپیدار
-      Gateway__Tenants__0__Sepidar__GenerationVersion: "101" # مقدار مورد انتظار برای GenerationVersion (api version)
-      Gateway__Tenants__0__Credentials__UserName: robat # نام کاربری سپیدار مشتری
-      Gateway__Tenants__0__Credentials__PasswordMd5: 7294a8e1350ed4228c575b9ab855de30 # هش MD5 پسورد مشتری (89757)
+    env_file:
+      - ./gateway.env
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5259/health/ready"]
       interval: 30s

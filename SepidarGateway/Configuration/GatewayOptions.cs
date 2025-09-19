@@ -77,7 +77,7 @@ public class TenantCredentialOptions
     public string UserName { get; set; } = string.Empty;
 
     [Required]
-    public string PasswordMd5 { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
 }
 
 public class TenantCryptoOptions

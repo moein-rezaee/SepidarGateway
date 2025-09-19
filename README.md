@@ -36,6 +36,13 @@ All customer/tenant customization lives in configuration files or environment va
 - تمام مسیرهای اصلی `/api/...` به صورت پیش‌فرض در `Gateway:Ocelot:Routes` درج شده‌اند.
 - همان ساختار `Ocelot` در ریشه نیز نگهداری شده تا بتوانید در زمان استقرار از طریق متغیرهای ENV آن را بازنویسی کنید.
 
+### `gateway.env`
+
+- این فایل همراه پروژه قرار گرفته و توسط `docker-compose` بارگذاری می‌شود.
+- همهٔ کلیدها با حروف بزرگ نوشته شده‌اند تا با قرارداد Docker/ENV سازگار باشند.
+- برای هر مشتری جدید کافی است مقادیر موجود (TenantId، Match، تنظیمات Sepidar و اطلاعات ورود) را با داده‌های او جایگزین کنید یا کل فایل را کپی کرده و شاخص‌های آرایه (`__0__`) را افزایش دهید.
+- اگر قصد اجرای لوکال بدون Docker را دارید می‌توانید همین متغیرها را در محیط سیستم‌عامل (`export` در لینوکس/مک یا `setx` در ویندوز) ست کنید تا بر `appsettings.{Environment}.json` غلبه کنند.
+
 ### Tenant configuration schema
 
 ```jsonc
@@ -57,7 +64,7 @@ All customer/tenant customization lives in configuration files or environment va
         },
         "Credentials": {
           "UserName": "robat",
-          "PasswordMd5": "7294a8e1350ed4228c575b9ab855de30"
+          "Password": "89757"
         },
         "Crypto": {},
         "Jwt": { "CacheSeconds": 1800, "PreAuthCheckSeconds": 300 },
@@ -82,7 +89,7 @@ All customer/tenant customization lives in configuration files or environment va
 | `Sepidar.DeviceSerial` | کانفیگ یا ENV | `10006c18` | سریال دستگاه ثبت‌شده در Sepidar |
 | `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
 | `Credentials.UserName` | کانفیگ یا ENV | `robat` | نام کاربری Sepidar |
-| `Credentials.PasswordMd5` | کانفیگ یا ENV | `7294a8e1350ed4228c575b9ab855de30` | هش MD5 پسورد (مثال: `printf "89757" | md5sum`) |
+| `Credentials.Password` | کانفیگ یا ENV | `89757` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
 | `Crypto.RsaPublicKeyXml` | کانفیگ یا ENV | تهی (در شروع) | پس از اولین `RegisterDevice` در پاسخ Sepidar ذخیره کنید |
 | `Jwt.CacheSeconds` و `PreAuthCheckSeconds` | کانفیگ یا ENV | `1800` و `300` | بر اساس سیاست تمدید توکن قابل تغییر است |
 | `Limits.RequestsPerMinute`، `QueueLimit`، `RequestTimeoutSeconds` | کانفیگ یا ENV | `120`، `100`، `60` | با سیاست نرخ‌دهی داخلی هماهنگ کنید |
@@ -90,7 +97,7 @@ All customer/tenant customization lives in configuration files or environment va
 ### گام‌های آماده‌سازی کانفیگ برای مشتری جدید
 
 1. فایل `SepidarGateway/appsettings.TenantSample.json` را کپی کنید و در فایل محیطی خود (مثل `appsettings.Production.json`) قرار دهید.
-2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، همان مقادیر را در `docker-compose.yml` نیز بروزرسانی کنید (راهنما کنار هر خط نوشته شده است).
+2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، فایل `gateway.env` را باز کنید و همان مقادیر را در آن فایل یا نسخهٔ کپی شدهٔ آن بروزرسانی کنید.
 3. اولین بار که گیت‌وی اجرا می‌شود و عملیات `RegisterDevice` موفق باشد، مقادیر `RsaPublicKeyXml`، `RsaModulusBase64` و `RsaExponentBase64` در لاگ چاپ می‌شود؛ آن‌ها را در بخش `Crypto` ذخیره کنید تا دفعه بعد نیازی به رجیستر مجدد نباشد.
 4. در صورت نیاز، API Key یا تنظیمات CORS را برای مشتری فعال کنید (آرایه‌ها را خالی گذاشته‌ایم تا اختیاری باشند).
 
@@ -145,7 +152,7 @@ docker compose up --build
 
 - `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5259**.
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
-- Override any environment variable in `docker-compose.yml` to run the gateway for an additional customer.
+- برای اجرای مشتری‌های بیشتر، یک کپی از `gateway.env` بسازید (یا شاخص‌ها را افزایش دهید) و آن را در سرویس جدید `env_file` کنید.
 
 ## Security notes
 

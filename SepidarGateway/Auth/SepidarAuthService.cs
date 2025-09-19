@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SepidarGateway.Configuration;
@@ -207,10 +208,12 @@ public sealed class SepidarAuthService : ISepidarAuth
         request.Headers.Add("ArbitraryCode", arbitraryCode);
         request.Headers.Add("EncArbitraryCode", encArbitraryCode);
 
+        var passwordHash = ComputePasswordHash(tenant.Credentials.Password);
+
         var loginPayload = JsonSerializer.Serialize(new
         {
             UserName = tenant.Credentials.UserName,
-            PasswordHash = tenant.Credentials.PasswordMd5
+            PasswordHash = passwordHash
         }, SerializerOptions);
         request.Content = new StringContent(loginPayload, Encoding.UTF8, "application/json");
 
@@ -251,6 +254,20 @@ public sealed class SepidarAuthService : ISepidarAuth
         headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
         headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         headers.TryAddWithoutValidation("ArbitraryCode", Guid.NewGuid().ToString());
+    }
+
+    private static string ComputePasswordHash(string password)
+    {
+        using var md5 = MD5.Create();
+        var bytes = Encoding.UTF8.GetBytes(password ?? string.Empty);
+        var hash = md5.ComputeHash(bytes);
+        var builder = new StringBuilder(hash.Length * 2);
+        foreach (var b in hash)
+        {
+            builder.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return builder.ToString();
     }
 
     private sealed record RegisterResponse(string Cypher, string IV);
