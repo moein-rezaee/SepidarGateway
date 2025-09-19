@@ -13,25 +13,25 @@ public sealed class CorrelationIdMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext Context)
     {
-        var correlation_id = context.Request.Headers.TryGetValue(HeaderName, out var header_value) && !string.IsNullOrWhiteSpace(header_value)
-            ? header_value.ToString()
+        var CorrelationId = Context.Request.Headers.TryGetValue(HeaderName, out var HeaderValue) && !string.IsNullOrWhiteSpace(HeaderValue)
+            ? HeaderValue.ToString()
             : Guid.NewGuid().ToString();
 
-        context.Items[HeaderName] = correlation_id;
-        context.Response.OnStarting(() =>
+        Context.Items[HeaderName] = CorrelationId;
+        Context.Response.OnStarting(() =>
         {
-            context.Response.Headers[HeaderName] = correlation_id;
+            Context.Response.Headers[HeaderName] = CorrelationId;
             return Task.CompletedTask;
         });
 
         using (_logger.BeginScope(new Dictionary<string, object>
                {
-                   [HeaderName] = correlation_id
+                   [HeaderName] = CorrelationId
                }))
         {
-            await _next(context);
+            await _next(Context);
         }
     }
 }

@@ -39,8 +39,8 @@ All customer/tenant customization lives in configuration files or environment va
 ### `gateway.env`
 
 - این فایل همراه پروژه قرار گرفته و توسط `docker-compose` بارگذاری می‌شود.
-- همهٔ کلیدها با حروف بزرگ نوشته شده‌اند تا با قرارداد Docker/ENV سازگار باشند.
-- برای هر مشتری جدید کافی است مقادیر موجود (TenantId، Match، تنظیمات Sepidar و اطلاعات ورود) را با داده‌های او جایگزین کنید یا کل فایل را کپی کرده و شاخص‌های آرایه (`__0__`) را افزایش دهید.
+- تنها مقادیر حساس (IntegrationId، DeviceSerial، UserName، Password و سایر اسرار) در این فایل نگهداری می‌شوند و همهٔ کلیدها به صورت PascalCase نوشته شده‌اند تا با قرارداد بایندینگ .NET منطبق باشند.
+- برای هر مشتری جدید، مقدار هر کلید را در محیط مقصد تغییر دهید و در صورت نیاز شاخص‌های آرایه (`__0__`) را افزایش دهید؛ تنظیمات غیرحساس در `appsettings.{Environment}.json` قرار دارند.
 - اگر قصد اجرای لوکال بدون Docker را دارید می‌توانید همین متغیرها را در محیط سیستم‌عامل (`export` در لینوکس/مک یا `setx` در ویندوز) ست کنید تا بر `appsettings.{Environment}.json` غلبه کنند.
 
 ### Tenant configuration schema
@@ -58,13 +58,13 @@ All customer/tenant customization lives in configuration files or environment va
         },
         "Sepidar": {
           "BaseUrl": "http://178.131.66.32:7373",
-          "IntegrationId": "10006c18",
-          "DeviceSerial": "10006c18",
+          "IntegrationId": "ChangeViaEnvironment",
+          "DeviceSerial": "ChangeViaEnvironment",
           "GenerationVersion": "101"
         },
         "Credentials": {
-          "UserName": "robat",
-          "Password": "89757"
+          "UserName": "ChangeViaEnvironment",
+          "Password": "ChangeViaEnvironment"
         },
         "Crypto": {},
         "Jwt": { "CacheSeconds": 1800, "PreAuthCheckSeconds": 300 },
@@ -85,11 +85,11 @@ All customer/tenant customization lives in configuration files or environment va
 | `TenantId` | `Gateway:Tenants[].TenantId` و `Gateway__Tenants__0__TenantId` | `main-tenant` | شناسه داخلی که در لاگ‌ها و سیاست‌ها استفاده می‌شود |
 | رزولوشن تننت | `Gateway:Tenants[].Match` یا متغیرهای ENV متناظر | Header `X-Tenant-ID = main-tenant` + Host `gateway.internal` + Path `/t/main` | بر اساس معماری شما (Host، Header یا PathBase) |
 | `Sepidar.BaseUrl` | کانفیگ یا ENV | `http://178.131.66.32:7373` | آدرس سرور Sepidar مشتری |
-| `Sepidar.IntegrationId` | کانفیگ یا ENV | `10006c18` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
-| `Sepidar.DeviceSerial` | کانفیگ یا ENV | `10006c18` | سریال دستگاه ثبت‌شده در Sepidar |
+| `Sepidar.IntegrationId` | ENV (مثال: `Gateway__Tenants__0__Sepidar__IntegrationId`) | `ChangeViaEnvironment` | از سریال دستگاه (کد رجیستر) استخراج می‌شود |
+| `Sepidar.DeviceSerial` | ENV (مثال: `Gateway__Tenants__0__Sepidar__DeviceSerial`) | `ChangeViaEnvironment` | سریال دستگاه ثبت‌شده در Sepidar |
 | `Sepidar.GenerationVersion` | کانفیگ یا ENV | `101` | مقدار `api version` اعلام‌شده توسط Sepidar |
-| `Credentials.UserName` | کانفیگ یا ENV | `robat` | نام کاربری Sepidar |
-| `Credentials.Password` | کانفیگ یا ENV | `89757` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
+| `Credentials.UserName` | ENV (مثال: `Gateway__Tenants__0__Credentials__UserName`) | `ChangeViaEnvironment` | نام کاربری Sepidar |
+| `Credentials.Password` | ENV (مثال: `Gateway__Tenants__0__Credentials__Password`) | `ChangeViaEnvironment` | همان رمز عبور خام سپیدار؛ گیت‌وی آن را به‌صورت خودکار MD5 می‌کند |
 | `Crypto.RsaPublicKeyXml` | کانفیگ یا ENV | تهی (در شروع) | پس از اولین `RegisterDevice` در پاسخ Sepidar ذخیره کنید |
 | `Jwt.CacheSeconds` و `PreAuthCheckSeconds` | کانفیگ یا ENV | `1800` و `300` | بر اساس سیاست تمدید توکن قابل تغییر است |
 | `Limits.RequestsPerMinute`، `QueueLimit`، `RequestTimeoutSeconds` | کانفیگ یا ENV | `120`، `100`، `60` | با سیاست نرخ‌دهی داخلی هماهنگ کنید |

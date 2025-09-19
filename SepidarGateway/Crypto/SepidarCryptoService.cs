@@ -9,58 +9,58 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 {
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload)
     {
-        using var aes_cipher = Aes.Create();
-        aes_cipher.Mode = CipherMode.CBC;
-        aes_cipher.Padding = PaddingMode.PKCS7;
-        aes_cipher.Key = DeriveKey(serialSeed);
-        aes_cipher.GenerateIV();
+        using var AesCipher = Aes.Create();
+        AesCipher.Mode = CipherMode.CBC;
+        AesCipher.Padding = PaddingMode.PKCS7;
+        AesCipher.Key = DeriveKey(serialSeed);
+        AesCipher.GenerateIV();
 
-        using var aes_encryptor = aes_cipher.CreateEncryptor();
-        var plain_bytes = Encoding.UTF8.GetBytes(payload);
-        var cipher_bytes = aes_encryptor.TransformFinalBlock(plain_bytes, 0, plain_bytes.Length);
-        return (Convert.ToBase64String(cipher_bytes), Convert.ToBase64String(aes_cipher.IV));
+        using var AesEncryptor = AesCipher.CreateEncryptor();
+        var PlainBytes = Encoding.UTF8.GetBytes(payload);
+        var CipherBytes = AesEncryptor.TransformFinalBlock(PlainBytes, 0, PlainBytes.Length);
+        return (Convert.ToBase64String(CipherBytes), Convert.ToBase64String(AesCipher.IV));
     }
 
     public string DecryptRegisterPayload(string serialSeed, string cipherTextBase64, string ivBase64)
     {
-        using var aes_cipher = Aes.Create();
-        aes_cipher.Mode = CipherMode.CBC;
-        aes_cipher.Padding = PaddingMode.PKCS7;
-        aes_cipher.Key = DeriveKey(serialSeed);
-        aes_cipher.IV = Convert.FromBase64String(ivBase64);
+        using var AesCipher = Aes.Create();
+        AesCipher.Mode = CipherMode.CBC;
+        AesCipher.Padding = PaddingMode.PKCS7;
+        AesCipher.Key = DeriveKey(serialSeed);
+        AesCipher.IV = Convert.FromBase64String(ivBase64);
 
-        using var aes_decryptor = aes_cipher.CreateDecryptor();
-        var cipher_bytes = Convert.FromBase64String(cipherTextBase64);
-        var plain_bytes = aes_decryptor.TransformFinalBlock(cipher_bytes, 0, cipher_bytes.Length);
-        return Encoding.UTF8.GetString(plain_bytes);
+        using var AesDecryptor = AesCipher.CreateDecryptor();
+        var CipherBytes = Convert.FromBase64String(cipherTextBase64);
+        var PlainBytes = AesDecryptor.TransformFinalBlock(CipherBytes, 0, CipherBytes.Length);
+        return Encoding.UTF8.GetString(PlainBytes);
     }
 
     public string EncryptArbitraryCode(string arbitraryCode, TenantCryptoOptions cryptoOptions)
     {
-        using var rsa_provider = RSA.Create();
-        ImportRsaParameters(rsa_provider, cryptoOptions);
-        var arbitrary_bytes = Encoding.UTF8.GetBytes(arbitraryCode);
-        var encrypted_bytes = rsa_provider.Encrypt(arbitrary_bytes, RSAEncryptionPadding.Pkcs1);
-        return Convert.ToBase64String(encrypted_bytes);
+        using var RsaProvider = RSA.Create();
+        ImportRsaParameters(RsaProvider, cryptoOptions);
+        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode);
+        var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
+        return Convert.ToBase64String(EncryptedBytes);
     }
 
     private static byte[] DeriveKey(string serialSeed)
     {
-        var serial_seed = serialSeed + serialSeed;
-        var seed_bytes = Encoding.UTF8.GetBytes(serial_seed);
-        if (seed_bytes.Length == 32)
+        var SerialSeed = serialSeed + serialSeed;
+        var SeedBytes = Encoding.UTF8.GetBytes(SerialSeed);
+        if (SeedBytes.Length == 32)
         {
-            return seed_bytes;
+            return SeedBytes;
         }
 
-        if (seed_bytes.Length > 32)
+        if (SeedBytes.Length > 32)
         {
-            return seed_bytes.Take(32).ToArray();
+            return SeedBytes.Take(32).ToArray();
         }
 
-        var seed_buffer = new byte[32];
-        Array.Copy(seed_bytes, seed_buffer, seed_bytes.Length);
-        return seed_buffer;
+        var SeedBuffer = new byte[32];
+        Array.Copy(SeedBytes, SeedBuffer, SeedBytes.Length);
+        return SeedBuffer;
     }
 
     private static void ImportRsaParameters(RSA rsa, TenantCryptoOptions cryptoOptions)
@@ -90,20 +90,20 @@ internal static class RsaExtensions
 {
     public static void FromXmlString(this RSA rsa, string xml)
     {
-        var xml_document = new XmlDocument();
-        xml_document.LoadXml(xml);
-        if (xml_document.DocumentElement?.Name != "RSAKeyValue")
+        var XmlDocument = new XmlDocument();
+        XmlDocument.LoadXml(xml);
+        if (XmlDocument.DocumentElement?.Name != "RSAKeyValue")
         {
             throw new InvalidOperationException("Invalid RSA key XML.");
         }
 
-        var rsa_modulus = Convert.FromBase64String(xml_document.DocumentElement.SelectSingleNode("Modulus")?.InnerText ?? throw new InvalidOperationException("Missing modulus"));
-        var rsa_exponent = Convert.FromBase64String(xml_document.DocumentElement.SelectSingleNode("Exponent")?.InnerText ?? throw new InvalidOperationException("Missing exponent"));
+        var RsaModulus = Convert.FromBase64String(XmlDocument.DocumentElement.SelectSingleNode("Modulus")?.InnerText ?? throw new InvalidOperationException("Missing modulus"));
+        var RsaExponent = Convert.FromBase64String(XmlDocument.DocumentElement.SelectSingleNode("Exponent")?.InnerText ?? throw new InvalidOperationException("Missing exponent"));
 
         rsa.ImportParameters(new RSAParameters
         {
-            Modulus = rsa_modulus,
-            Exponent = rsa_exponent
+            Modulus = RsaModulus,
+            Exponent = RsaExponent
         });
     }
 }

@@ -37,60 +37,61 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         _gatewayOptions = options.Value;
     }
 
-    public void Apply(OpenApiDocument swagger_doc, DocumentFilterContext context)
+    public void Apply(OpenApiDocument SwaggerDocument, DocumentFilterContext Context)
     {
+        _ = Context;
         if (_gatewayOptions.Ocelot?.Routes == null || _gatewayOptions.Ocelot.Routes.Count == 0)
         {
             return;
         }
 
-        swagger_doc.Paths ??= new OpenApiPaths();
-        var existing_operations = new HashSet<(string Path, OperationType Operation)>();
+        SwaggerDocument.Paths ??= new OpenApiPaths();
+        var ExistingOperations = new HashSet<(string Path, OperationType Operation)>();
 
-        foreach (var route_config in _gatewayOptions.Ocelot.Routes)
+        foreach (var RouteConfiguration in _gatewayOptions.Ocelot.Routes)
         {
-            var normalized_path = NormalizePath(route_config.UpstreamPathTemplate);
-            if (string.IsNullOrWhiteSpace(normalized_path))
+            var NormalizedPath = NormalizePath(RouteConfiguration.UpstreamPathTemplate);
+            if (string.IsNullOrWhiteSpace(NormalizedPath))
             {
                 continue;
             }
 
-            if (!swagger_doc.Paths.TryGetValue(normalized_path, out var path_item))
+            if (!SwaggerDocument.Paths.TryGetValue(NormalizedPath, out var PathItem))
             {
-                path_item = new OpenApiPathItem();
-                swagger_doc.Paths[normalized_path] = path_item;
+                PathItem = new OpenApiPathItem();
+                SwaggerDocument.Paths[NormalizedPath] = PathItem;
             }
 
-            var route_tag = DeriveTag(normalized_path);
-            var upstream_methods = route_config.UpstreamHttpMethod?.Count > 0
-                ? route_config.UpstreamHttpMethod
+            var RouteTag = DeriveTag(NormalizedPath);
+            var UpstreamMethods = RouteConfiguration.UpstreamHttpMethod?.Count > 0
+                ? RouteConfiguration.UpstreamHttpMethod
                 : new List<string> { "GET" };
 
-            foreach (var http_method in upstream_methods)
+            foreach (var HttpMethodName in UpstreamMethods)
             {
-                if (string.IsNullOrWhiteSpace(http_method) || !Enum.TryParse<OperationType>(http_method, true, out var operation_type))
+                if (string.IsNullOrWhiteSpace(HttpMethodName) || !Enum.TryParse(HttpMethodName, true, out OperationType OperationTypeValue))
                 {
                     continue;
                 }
 
-                if (!existing_operations.Add((normalized_path, operation_type)))
+                if (!ExistingOperations.Add((NormalizedPath, OperationTypeValue)))
                 {
                     continue;
                 }
 
-                var gateway_operation = BuildOperation(route_config, normalized_path, route_tag);
-                path_item.Operations[operation_type] = gateway_operation;
+                var GatewayOperation = BuildOperation(RouteConfiguration, NormalizedPath, RouteTag);
+                PathItem.Operations[OperationTypeValue] = GatewayOperation;
             }
         }
     }
 
-    private static OpenApiOperation BuildOperation(RouteConfig route_config, string normalized_path, string route_tag)
+    private static OpenApiOperation BuildOperation(RouteConfig RouteConfiguration, string NormalizedPath, string RouteTag)
     {
-        var gateway_operation = new OpenApiOperation
+        var GatewayOperation = new OpenApiOperation
         {
-            Summary = $"Proxy {string.Join(", ", route_config.UpstreamHttpMethod ?? new List<string> { "GET" })} {normalized_path}",
-            Description = $"Forwards the request to Sepidar endpoint `{route_config.DownstreamPathTemplate}`.",
-            Tags = new List<OpenApiTag> { new() { Name = route_tag } },
+            Summary = $"Proxy {string.Join(", ", RouteConfiguration.UpstreamHttpMethod ?? new List<string> { "GET" })} {NormalizedPath}",
+            Description = $"Forwards the request to Sepidar endpoint `{RouteConfiguration.DownstreamPathTemplate}`.",
+            Tags = new List<OpenApiTag> { new() { Name = RouteTag } },
             Responses = new OpenApiResponses
             {
                 ["200"] = new OpenApiResponse
@@ -116,11 +117,11 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             }
         };
 
-        foreach (var parameter_name in ExtractPathParameters(normalized_path))
+        foreach (var ParameterName in ExtractPathParameters(NormalizedPath))
         {
-            gateway_operation.Parameters.Add(new OpenApiParameter
+            GatewayOperation.Parameters.Add(new OpenApiParameter
             {
-                Name = parameter_name,
+                Name = ParameterName,
                 In = ParameterLocation.Path,
                 Required = true,
                 Schema = new OpenApiSchema { Type = "string" },
@@ -128,51 +129,51 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             });
         }
 
-        return gateway_operation;
+        return GatewayOperation;
     }
 
-    private static string NormalizePath(string route_path)
+    private static string NormalizePath(string RoutePath)
     {
-        if (string.IsNullOrWhiteSpace(route_path))
+        if (string.IsNullOrWhiteSpace(RoutePath))
         {
             return string.Empty;
         }
 
-        var trimmed_path = route_path.Trim();
-        if (!trimmed_path.StartsWith('/'))
+        var TrimmedPath = RoutePath.Trim();
+        if (!TrimmedPath.StartsWith('/'))
         {
-            trimmed_path = "/" + trimmed_path;
+            TrimmedPath = "/" + TrimmedPath;
         }
 
-        while (trimmed_path.Contains("//", StringComparison.Ordinal))
+        while (TrimmedPath.Contains("//", StringComparison.Ordinal))
         {
-            trimmed_path = trimmed_path.Replace("//", "/", StringComparison.Ordinal);
+            TrimmedPath = TrimmedPath.Replace("//", "/", StringComparison.Ordinal);
         }
 
-        return trimmed_path;
+        return TrimmedPath;
     }
 
-    private static IEnumerable<string> ExtractPathParameters(string route_path)
+    private static IEnumerable<string> ExtractPathParameters(string RoutePath)
     {
-        var seen_parameters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match parameter_match in PathParameterRegex.Matches(route_path))
+        var SeenParameters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match ParameterMatch in PathParameterRegex.Matches(RoutePath))
         {
-            var parameter_name = parameter_match.Groups["name"].Value;
-            if (!string.IsNullOrWhiteSpace(parameter_name) && seen_parameters.Add(parameter_name))
+            var ParameterName = ParameterMatch.Groups["name"].Value;
+            if (!string.IsNullOrWhiteSpace(ParameterName) && SeenParameters.Add(ParameterName))
             {
-                yield return parameter_name;
+                yield return ParameterName;
             }
         }
     }
 
-    private static string DeriveTag(string route_path)
+    private static string DeriveTag(string RoutePath)
     {
-        var path_segments = route_path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var path_segment in path_segments)
+        var PathSegments = RoutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var PathSegment in PathSegments)
         {
-            if (!path_segment.Equals("api", StringComparison.OrdinalIgnoreCase))
+            if (!PathSegment.Equals("api", StringComparison.OrdinalIgnoreCase))
             {
-                return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(path_segment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal));
+                return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(PathSegment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal));
             }
         }
 

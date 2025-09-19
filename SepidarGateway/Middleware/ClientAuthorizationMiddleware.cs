@@ -13,30 +13,30 @@ public sealed class ClientAuthorizationMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext context, ITenantContextAccessor tenant_accessor)
+    public async Task InvokeAsync(HttpContext Context, ITenantContextAccessor TenantAccessor)
     {
-        var tenant_context = tenant_accessor.CurrentTenant;
-        if (tenant_context?.Options.Clients?.ApiKeys is { Length: > 0 })
+        var TenantContext = TenantAccessor.CurrentTenant;
+        if (TenantContext?.Options.Clients?.ApiKeys is { Length: > 0 })
         {
-            if (!context.Request.Headers.TryGetValue("X-API-Key", out var api_key_value) ||
-                string.IsNullOrWhiteSpace(api_key_value))
+            if (!Context.Request.Headers.TryGetValue("X-API-Key", out var ApiKeyValue) ||
+                string.IsNullOrWhiteSpace(ApiKeyValue))
             {
-                _logger.LogWarning("Missing API key for tenant {TenantId}", tenant_context.Options.TenantId);
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Missing API key");
+                _logger.LogWarning("Missing API key for tenant {TenantId}", TenantContext.Options.TenantId);
+                Context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await Context.Response.WriteAsync("Missing API key");
                 return;
             }
 
-            if (!tenant_context.Options.Clients.ApiKeys.Any(configured_key =>
-                    string.Equals(configured_key, api_key_value.ToString(), StringComparison.Ordinal)))
+            if (!TenantContext.Options.Clients.ApiKeys.Any(ConfiguredKey =>
+                    string.Equals(ConfiguredKey, ApiKeyValue.ToString(), StringComparison.Ordinal)))
             {
-                _logger.LogWarning("Invalid API key for tenant {TenantId}", tenant_context.Options.TenantId);
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Invalid API key");
+                _logger.LogWarning("Invalid API key for tenant {TenantId}", TenantContext.Options.TenantId);
+                Context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await Context.Response.WriteAsync("Invalid API key");
                 return;
             }
         }
 
-        await _next(context);
+        await _next(Context);
     }
 }

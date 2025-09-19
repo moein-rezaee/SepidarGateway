@@ -5,7 +5,7 @@ namespace SepidarGateway.Tenancy;
 
 public interface ITenantResolver
 {
-    TenantOptions? Resolve(HttpContext context);
+    TenantOptions? Resolve(HttpContext Context);
 }
 
 public sealed class TenantContext
@@ -36,8 +36,8 @@ internal sealed class TenantContextAccessor : ITenantContextAccessor
     public TenantContext? CurrentTenant
     {
         get => _currentTenant ??
-               (_httpContextAccessor.HttpContext?.Items.TryGetValue(TenantKey, out var tenant_value) == true
-                   ? tenant_value as TenantContext
+               (_httpContextAccessor.HttpContext?.Items.TryGetValue(TenantKey, out var TenantValue) == true
+                   ? TenantValue as TenantContext
                    : null);
         set
         {
@@ -61,65 +61,65 @@ internal sealed class TenantResolver : ITenantResolver
         _optionsMonitor = optionsMonitor;
     }
 
-    public TenantOptions? Resolve(HttpContext context)
+    public TenantOptions? Resolve(HttpContext Context)
     {
-        var gateway_options = _optionsMonitor.CurrentValue;
-        foreach (var tenant_option in gateway_options.Tenants)
+        var GatewayOptions = _optionsMonitor.CurrentValue;
+        foreach (var TenantOption in GatewayOptions.Tenants)
         {
-            if (IsMatch(tenant_option, context))
+            if (IsMatch(TenantOption, Context))
             {
-                return tenant_option;
+                return TenantOption;
             }
         }
 
         return null;
     }
 
-    private static bool IsMatch(TenantOptions tenant, HttpContext context)
+    private static bool IsMatch(TenantOptions Tenant, HttpContext Context)
     {
-        var tenant_match = tenant.Match;
-        if (tenant_match.Hostnames is { Length: > 0 })
+        var TenantMatch = Tenant.Match;
+        if (TenantMatch.Hostnames is { Length: > 0 })
         {
-            var request_host = context.Request.Host.Host;
-            if (!tenant_match.Hostnames.Any(h => string.Equals(h, request_host, StringComparison.OrdinalIgnoreCase)))
+            var RequestHost = Context.Request.Host.Host;
+            if (!TenantMatch.Hostnames.Any(Hostname => string.Equals(Hostname, RequestHost, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
         }
 
-        if (tenant_match.Header is { } header_rule &&
-            !string.IsNullOrWhiteSpace(header_rule.HeaderName) &&
-            header_rule.HeaderValues is { Length: > 0 })
+        if (TenantMatch.Header is { } HeaderRule &&
+            !string.IsNullOrWhiteSpace(HeaderRule.HeaderName) &&
+            HeaderRule.HeaderValues is { Length: > 0 })
         {
-            if (!context.Request.Headers.TryGetValue(header_rule.HeaderName, out var header_value_span))
+            if (!Context.Request.Headers.TryGetValue(HeaderRule.HeaderName, out var HeaderValueSpan))
             {
                 return false;
             }
 
-            var header_values = header_value_span.ToArray();
-            var request_values = header_values.Length == 0
+            var HeaderValues = HeaderValueSpan.ToArray();
+            var RequestValues = HeaderValues.Length == 0
                 ? Array.Empty<string>()
-                : header_values
-                    .Select(v => v?.Trim())
-                    .Where(v => !string.IsNullOrWhiteSpace(v))
-                    .Select(v => v!)
+                : HeaderValues
+                    .Select(Value => Value?.Trim())
+                    .Where(Value => !string.IsNullOrWhiteSpace(Value))
+                    .Select(Value => Value!)
                     .ToArray();
-            if (!header_rule.HeaderValues.Any(expected =>
-                    request_values.Any(actual => string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))))
+            if (!HeaderRule.HeaderValues.Any(Expected =>
+                    RequestValues.Any(Actual => string.Equals(Actual, Expected, StringComparison.OrdinalIgnoreCase))))
             {
                 return false;
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(tenant_match.PathBase) && tenant_match.PathBase != "/" && context.Request.Path.HasValue)
+        if (!string.IsNullOrWhiteSpace(TenantMatch.PathBase) && TenantMatch.PathBase != "/" && Context.Request.Path.HasValue)
         {
-            if (!context.Request.Path.StartsWithSegments(tenant_match.PathBase, out var path_remaining))
+            if (!Context.Request.Path.StartsWithSegments(TenantMatch.PathBase, out var PathRemaining))
             {
                 return false;
             }
 
-            context.Request.PathBase = tenant_match.PathBase;
-            context.Request.Path = path_remaining;
+            Context.Request.PathBase = TenantMatch.PathBase;
+            Context.Request.Path = PathRemaining;
         }
 
         return true;
@@ -145,25 +145,25 @@ public sealed class TenantContextMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext Context)
     {
-        var tenant_option = _resolver.Resolve(context);
-        if (tenant_option == null)
+        var TenantOption = _resolver.Resolve(Context);
+        if (TenantOption == null)
         {
-            context.Response.StatusCode = StatusCodes.Status404NotFound;
-            await context.Response.WriteAsync("Tenant not found");
+            Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await Context.Response.WriteAsync("Tenant not found");
             return;
         }
 
-        var tenant_context = new TenantContext(tenant_option);
-        _accessor.CurrentTenant = tenant_context;
+        var TenantContext = new TenantContext(TenantOption);
+        _accessor.CurrentTenant = TenantContext;
 
         using (_logger.BeginScope(new Dictionary<string, object>
                {
-                   ["TenantId"] = tenant_option.TenantId
+                   ["TenantId"] = TenantOption.TenantId
                }))
         {
-            await _next(context);
+            await _next(Context);
         }
     }
 }

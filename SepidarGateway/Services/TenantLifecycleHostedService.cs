@@ -20,40 +20,40 @@ public sealed class TenantLifecycleHostedService : BackgroundService
         _logger = logger;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken StoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        while (!StoppingToken.IsCancellationRequested)
         {
             try
             {
-                var tenant_list = _optionsMonitor.CurrentValue.Tenants.ToList();
-                using var tenant_scope = _scopeFactory.CreateScope();
-                var auth_service = tenant_scope.ServiceProvider.GetRequiredService<ISepidarAuth>();
+                var TenantList = _optionsMonitor.CurrentValue.Tenants.ToList();
+                using var TenantScope = _scopeFactory.CreateScope();
+                var AuthService = TenantScope.ServiceProvider.GetRequiredService<ISepidarAuth>();
 
-                foreach (var tenant_option in tenant_list)
+                foreach (var TenantOption in TenantList)
                 {
                     try
                     {
-                        await auth_service.EnsureDeviceRegisteredAsync(tenant_option, stoppingToken).ConfigureAwait(false);
-                        var jwt_token = await auth_service.EnsureTokenAsync(tenant_option, stoppingToken).ConfigureAwait(false);
-                        _logger.LogDebug("Tenant {TenantId} token cached {TokenLength}", tenant_option.TenantId, jwt_token.Length);
-                        await auth_service.IsAuthorizedAsync(tenant_option, stoppingToken).ConfigureAwait(false);
+                        await AuthService.EnsureDeviceRegisteredAsync(TenantOption, StoppingToken).ConfigureAwait(false);
+                        var JwtToken = await AuthService.EnsureTokenAsync(TenantOption, StoppingToken).ConfigureAwait(false);
+                        _logger.LogDebug("Tenant {TenantId} token cached {TokenLength}", TenantOption.TenantId, JwtToken.Length);
+                        await AuthService.IsAuthorizedAsync(TenantOption, StoppingToken).ConfigureAwait(false);
                     }
-                    catch (Exception auth_error) when (!stoppingToken.IsCancellationRequested)
+                    catch (Exception AuthError) when (!StoppingToken.IsCancellationRequested)
                     {
-                        _logger.LogError(auth_error, "Failed lifecycle operation for tenant {TenantId}", tenant_option.TenantId);
-                        auth_service.InvalidateToken(tenant_option.TenantId);
+                        _logger.LogError(AuthError, "Failed lifecycle operation for tenant {TenantId}", TenantOption.TenantId);
+                        AuthService.InvalidateToken(TenantOption.TenantId);
                     }
                 }
             }
-            catch (Exception iteration_error) when (!stoppingToken.IsCancellationRequested)
+            catch (Exception IterationError) when (!StoppingToken.IsCancellationRequested)
             {
-                _logger.LogError(iteration_error, "Tenant lifecycle iteration failed");
+                _logger.LogError(IterationError, "Tenant lifecycle iteration failed");
             }
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(60), StoppingToken).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {

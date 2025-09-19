@@ -29,61 +29,61 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         _httpContextAccessor = httpContextAccessor;
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage Request, CancellationToken CancellationToken)
     {
-        var tenant_options = _tenantAccessor.CurrentTenant?.Options;
-        if (tenant_options is null)
+        var TenantOptions = _tenantAccessor.CurrentTenant?.Options;
+        if (TenantOptions is null)
         {
             throw new InvalidOperationException("Tenant context missing for downstream request");
         }
 
-        if (request.RequestUri is { } original_uri)
+        if (Request.RequestUri is { } OriginalUri)
         {
-            var base_uri = new Uri(tenant_options.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-            var downstream_uri = new Uri(base_uri, original_uri.PathAndQuery.TrimStart('/'));
-            request.RequestUri = downstream_uri;
+            var BaseUri = new Uri(TenantOptions.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+            var DownstreamUri = new Uri(BaseUri, OriginalUri.PathAndQuery.TrimStart('/'));
+            Request.RequestUri = DownstreamUri;
         }
 
-        request.Headers.Remove("GenerationVersion");
-        request.Headers.Remove("IntegrationID");
-        request.Headers.Remove("ArbitraryCode");
-        request.Headers.Remove("EncArbitraryCode");
+        Request.Headers.Remove("GenerationVersion");
+        Request.Headers.Remove("IntegrationID");
+        Request.Headers.Remove("ArbitraryCode");
+        Request.Headers.Remove("EncArbitraryCode");
 
-        request.Headers.TryAddWithoutValidation("GenerationVersion", tenant_options.Sepidar.GenerationVersion);
-        request.Headers.TryAddWithoutValidation("IntegrationID", tenant_options.Sepidar.IntegrationId);
+        Request.Headers.TryAddWithoutValidation("GenerationVersion", TenantOptions.Sepidar.GenerationVersion);
+        Request.Headers.TryAddWithoutValidation("IntegrationID", TenantOptions.Sepidar.IntegrationId);
 
-        var arbitrary_code = Guid.NewGuid().ToString();
-        var encrypted_code = _crypto.EncryptArbitraryCode(arbitrary_code, tenant_options.Crypto);
-        request.Headers.TryAddWithoutValidation("ArbitraryCode", arbitrary_code);
-        request.Headers.TryAddWithoutValidation("EncArbitraryCode", encrypted_code);
+        var ArbitraryCode = Guid.NewGuid().ToString();
+        var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, TenantOptions.Crypto);
+        Request.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
+        Request.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
 
-        if (request.Headers.Contains("Authorization"))
+        if (Request.Headers.Contains("Authorization"))
         {
-            request.Headers.Authorization = null;
+            Request.Headers.Authorization = null;
         }
 
         try
         {
-            var jwt_token = await _auth.EnsureTokenAsync(tenant_options, cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(jwt_token))
+            var JwtToken = await _auth.EnsureTokenAsync(TenantOptions, CancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(JwtToken))
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt_token);
+                Request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtToken);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to ensure JWT for tenant {TenantId}", tenant_options.TenantId);
+            _logger.LogError(ex, "Failed to ensure JWT for tenant {TenantId}", TenantOptions.TenantId);
             throw;
         }
 
-        _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", tenant_options.TenantId, request.RequestUri);
+        _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", TenantOptions.TenantId, Request.RequestUri);
 
-        var correlation_id = _httpContextAccessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] as string;
-        if (!string.IsNullOrWhiteSpace(correlation_id))
+        var CorrelationId = _httpContextAccessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] as string;
+        if (!string.IsNullOrWhiteSpace(CorrelationId))
         {
-            request.Headers.TryAddWithoutValidation(CorrelationIdMiddleware.HeaderName, correlation_id);
+            Request.Headers.TryAddWithoutValidation(CorrelationIdMiddleware.HeaderName, CorrelationId);
         }
 
-        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return await base.SendAsync(Request, CancellationToken).ConfigureAwait(false);
     }
 }
