@@ -28,6 +28,9 @@ public static class GatewayEnvironmentConfigurationExtensions
         ["APIVERSION"] = "ApiVersion",
         ["REGISTERPATH"] = "RegisterPath",
         ["REGISTERFALLBACKPATHS"] = "RegisterFallbackPaths",
+        ["REGISTERPAYLOADMODE"] = "RegisterPayloadMode",
+        ["REGISTERSTRICT"] = "RegisterStrict",
+        ["REGISTERCOOKIE"] = "RegisterCookie",
         ["LOGINPATH"] = "LoginPath",
         ["ISAUTHORIZEDPATH"] = "IsAuthorizedPath",
         ["SWAGGERDOCUMENTPATH"] = "SwaggerDocumentPath",
@@ -67,6 +70,16 @@ public static class GatewayEnvironmentConfigurationExtensions
 
     public static IConfigurationBuilder AddGatewayEnvironmentOverrides(this IConfigurationBuilder builder)
     {
+        // Support top-level single-tenant mode flag: GW_SINGLETENANTMODE=true
+        var singleTenant = Environment.GetEnvironmentVariable("GW_SINGLETENANTMODE");
+        if (!string.IsNullOrWhiteSpace(singleTenant))
+        {
+            builder.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Gateway:SingleTenantMode"] = singleTenant
+            });
+        }
+
         var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
         foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
@@ -77,19 +90,24 @@ public static class GatewayEnvironmentConfigurationExtensions
             }
 
             var segments = rawKey.Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (segments.Length < 3)
+            if (segments.Length < 2)
             {
                 continue;
             }
 
-            var tenantSegment = segments[1];
-            if (!tenantSegment.StartsWith("T", StringComparison.OrdinalIgnoreCase) || !int.TryParse(tenantSegment[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var tenantIndex))
+            bool singleTenantKey = true;
+            int tenantIndex = 0;
+            int startIndex = 1; // first segment after prefix
+            if (segments.Length >= 3 && segments[1].StartsWith("T", StringComparison.OrdinalIgnoreCase) && int.TryParse(segments[1][1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedIndex))
             {
-                continue;
+                // Legacy multi-tenant key: GW_T{n}_...
+                singleTenantKey = false;
+                tenantIndex = parsedIndex;
+                startIndex = 2;
             }
 
             var propertySegments = new List<string>();
-            for (var i = 2; i < segments.Length; i++)
+            for (var i = startIndex; i < segments.Length; i++)
             {
                 var segment = segments[i];
                 if (!SegmentMap.TryGetValue(segment, out var mapped))
@@ -105,7 +123,9 @@ public static class GatewayEnvironmentConfigurationExtensions
                 continue;
             }
 
-            var baseSegments = new List<string> { "Gateway", "Tenants", tenantIndex.ToString(CultureInfo.InvariantCulture) };
+            var baseSegments = singleTenantKey
+                ? new List<string> { "Gateway", "Tenant" }
+                : new List<string> { "Gateway", "Tenants", tenantIndex.ToString(CultureInfo.InvariantCulture) };
             var rawValue = entry.Value?.ToString() ?? string.Empty;
 
             if (ArraySegments.Contains(segments[^1]))

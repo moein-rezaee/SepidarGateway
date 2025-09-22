@@ -56,6 +56,14 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 continue;
             }
 
+            // Hide low-level Sepidar auth/registration proxy routes from Swagger to avoid confusion;
+            // users should use simplified /device/* endpoints instead.
+            var down = (RouteConfiguration.DownstreamPathTemplate ?? string.Empty).Trim().ToLowerInvariant();
+            if (down.Contains("/api/devices/register") || down.Contains("/api/users/login"))
+            {
+                continue;
+            }
+
             if (!SwaggerDocument.Paths.TryGetValue(NormalizedPath, out var PathItem))
             {
                 PathItem = new OpenApiPathItem();
@@ -85,7 +93,7 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         }
     }
 
-    private static OpenApiOperation BuildOperation(RouteConfig RouteConfiguration, string NormalizedPath, string RouteTag)
+    private OpenApiOperation BuildOperation(RouteConfig RouteConfiguration, string NormalizedPath, string RouteTag)
     {
         var GatewayOperation = new OpenApiOperation
         {
@@ -106,14 +114,15 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 {
                     Description = "GenerationVersion mismatch reported by Sepidar."
                 }
-            },
-            Security = new List<OpenApiSecurityRequirement>
+            }
+        };
+
+        // In single-customer mode, X-Tenant-ID is not required. Keep only client API key if configured.
+        GatewayOperation.Security = new List<OpenApiSecurityRequirement>
+        {
+            new()
             {
-                new()
-                {
-                    [TenantSecurityReference] = Array.Empty<string>(),
-                    [ApiKeySecurityReference] = Array.Empty<string>()
-                }
+                [ApiKeySecurityReference] = Array.Empty<string>()
             }
         };
 
@@ -127,6 +136,68 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 Schema = new OpenApiSchema { Type = "string" },
                 Description = "Value forwarded to Sepidar endpoint."
             });
+        }
+
+        // Attach request body schemas for known POST endpoints so Swagger "Try it out" works.
+        if ((RouteConfiguration.UpstreamHttpMethod?.Any(m => string.Equals(m, "POST", StringComparison.OrdinalIgnoreCase)) ?? false))
+        {
+            var pathLower = NormalizedPath.Trim('/').ToLowerInvariant();
+            if (pathLower.StartsWith("api/devices/register"))
+            {
+                // Register request. Shape depends on RegisterPayloadMode; default to IntegrationOnly if set.
+                var mode = _gatewayOptions?.Tenant?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
+                var schema = new OpenApiSchema
+                {
+                    Type = "object",
+                    Properties = new Dictionary<string, OpenApiSchema>
+                    {
+                        ["Cypher"] = new OpenApiSchema { Type = "string", Description = "Base64 AES cipher" },
+                        ["IV"] = new OpenApiSchema { Type = "string", Description = "Base64 AES IV" },
+                        ["IntegrationID"] = new OpenApiSchema { Type = "integer", Format = "int32" }
+                    },
+                    Required = new HashSet<string> { "Cypher", "IV", "IntegrationID" }
+                };
+
+                if (!string.Equals(mode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
+                {
+                    schema.Properties["DeviceSerial"] = new OpenApiSchema { Type = "string" };
+                }
+
+                GatewayOperation.RequestBody = new OpenApiRequestBody
+                {
+                    Required = true,
+                    Content = new Dictionary<string, OpenApiMediaType>
+                    {
+                        ["application/json"] = new OpenApiMediaType
+                        {
+                            Schema = schema
+                        }
+                    }
+                };
+            }
+            else if (pathLower.StartsWith("api/users/login"))
+            {
+                GatewayOperation.RequestBody = new OpenApiRequestBody
+                {
+                    Required = true,
+                    Content = new Dictionary<string, OpenApiMediaType>
+                    {
+                        ["application/json"] = new OpenApiMediaType
+                        {
+                            Schema = new OpenApiSchema
+                            {
+                                Type = "object",
+                                Properties = new Dictionary<string, OpenApiSchema>
+                                {
+                                    ["UserName"] = new OpenApiSchema { Type = "string" },
+                                    ["PasswordHash"] = new OpenApiSchema { Type = "string", Description = "MD5 lowercase hex" }
+                                },
+                                Required = new HashSet<string> { "UserName", "PasswordHash" }
+                            }
+                        }
+                    }
+                };
+            }
         }
 
         return GatewayOperation;
@@ -173,10 +244,18 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         {
             if (!PathSegment.Equals("api", StringComparison.OrdinalIgnoreCase))
             {
-                return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(PathSegment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal));
+                var name = PathSegment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal);
+                return ToPascalCase(name);
             }
         }
 
         return "Api";
+    }
+
+    private static string ToPascalCase(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+        var parts = value.Split(new[] { '-', '_', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        return string.Concat(parts.Select(p => char.ToUpperInvariant(p[0]) + (p.Length > 1 ? p[1..] : string.Empty)));
     }
 }

@@ -1,7 +1,13 @@
 services:
   gateway:
-    build: .
-    image: sepidar-gateway:latest
+    build:
+      context: .
+      # برچسب‌های اضافی برای ایمیج هنگام بیلد
+      tags:
+        - sepidar-gateway:0.0.0
+    image: sepidar-gateway:0.0.0
+    container_name: sepidar-gateway
+    restart: always
     ports:
       - "5259:5259" # نگاشت پورت کانتینر (پورت گیت‌وی) به پورت میزبان مورد نظر
     env_file:
@@ -11,3 +17,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    # بدون شبکه سفارشی؛ از شبکه پیش‌فرض داکر-کامپوز استفاده می‌شود

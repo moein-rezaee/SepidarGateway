@@ -1,22 +1,23 @@
 using Microsoft.AspNetCore.Cors.Infrastructure;
-using SepidarGateway.Tenancy;
+using Microsoft.Extensions.Options;
+using SepidarGateway.Configuration;
 
 namespace SepidarGateway.Middleware;
 
 public sealed class TenantCorsPolicyProvider : ICorsPolicyProvider
 {
-    private readonly ITenantContextAccessor _tenantAccessor;
+    private readonly IOptionsMonitor<GatewayOptions> _options;
     private readonly ILogger<TenantCorsPolicyProvider> _logger;
 
-    public TenantCorsPolicyProvider(ITenantContextAccessor tenantAccessor, ILogger<TenantCorsPolicyProvider> logger)
+    public TenantCorsPolicyProvider(IOptionsMonitor<GatewayOptions> options, ILogger<TenantCorsPolicyProvider> logger)
     {
-        _tenantAccessor = tenantAccessor;
+        _options = options;
         _logger = logger;
     }
 
     public Task<CorsPolicy?> GetPolicyAsync(HttpContext Context, string? PolicyName)
     {
-        var TenantOptions = _tenantAccessor.CurrentTenant?.Options;
+        var TenantOptions = _options.CurrentValue.Tenant;
         var CorsBuilder = new CorsPolicyBuilder();
 
         if (TenantOptions?.Cors?.AllowedOrigins is { Length: > 0 })

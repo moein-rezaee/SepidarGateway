@@ -3,26 +3,27 @@ using Microsoft.AspNetCore.Http;
 using SepidarGateway.Auth;
 using SepidarGateway.Crypto;
 using SepidarGateway.Observability;
-using SepidarGateway.Tenancy;
+using Microsoft.Extensions.Options;
+using SepidarGateway.Configuration;
 
 namespace SepidarGateway.Handlers;
 
 public sealed class SepidarHeaderHandler : DelegatingHandler
 {
-    private readonly ITenantContextAccessor _tenantAccessor;
+    private readonly IOptionsMonitor<GatewayOptions> _options;
     private readonly ISepidarAuth _auth;
     private readonly ISepidarCrypto _crypto;
     private readonly ILogger<SepidarHeaderHandler> _logger;
     private readonly IHttpContextAccessor _httpContextAccessor;
 
     public SepidarHeaderHandler(
-        ITenantContextAccessor tenantAccessor,
+        IOptionsMonitor<GatewayOptions> options,
         ISepidarAuth auth,
         ISepidarCrypto crypto,
         ILogger<SepidarHeaderHandler> logger,
         IHttpContextAccessor httpContextAccessor)
     {
-        _tenantAccessor = tenantAccessor;
+        _options = options;
         _auth = auth;
         _crypto = crypto;
         _logger = logger;
@@ -31,17 +32,27 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage Request, CancellationToken CancellationToken)
     {
-        var TenantOptions = _tenantAccessor.CurrentTenant?.Options;
+        var TenantOptions = _options.CurrentValue.Tenant;
         if (TenantOptions is null)
         {
             throw new InvalidOperationException("Tenant context missing for downstream request");
         }
 
+        string effectivePath = Request.RequestUri?.AbsolutePath.Trim('/').ToLowerInvariant() ?? string.Empty;
         if (Request.RequestUri is { } OriginalUri)
         {
             var BaseUri = new Uri(TenantOptions.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
             var DownstreamUri = new Uri(BaseUri, OriginalUri.PathAndQuery.TrimStart('/'));
-            Request.RequestUri = AppendApiVersionQuery(DownstreamUri, TenantOptions.Sepidar.ApiVersion);
+            var registerPathNormUri = (TenantOptions.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
+            var isRegister = !string.IsNullOrEmpty(registerPathNormUri) &&
+                             (effectivePath.Equals(registerPathNormUri, StringComparison.OrdinalIgnoreCase) ||
+                              effectivePath.StartsWith(registerPathNormUri + "/", StringComparison.OrdinalIgnoreCase))
+                             || effectivePath.Contains("/register", StringComparison.OrdinalIgnoreCase);
+            var isLogin = effectivePath.Contains("/users/login", StringComparison.OrdinalIgnoreCase);
+            var shouldAppendApiVersion = !(isRegister || isLogin);
+            Request.RequestUri = shouldAppendApiVersion
+                ? AppendApiVersionQuery(DownstreamUri, TenantOptions.Sepidar.ApiVersion)
+                : DownstreamUri;
         }
 
         Request.Headers.Remove("GenerationVersion");
@@ -59,27 +70,52 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         }
 
         var ArbitraryCode = Guid.NewGuid().ToString();
-        var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, TenantOptions.Crypto);
-        Request.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
-        Request.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
+        // Only add ArbitraryCode headers if RSA is configured (post-registration)
+        var hasRsa = !string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaPublicKeyXml)
+                     || (!string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaModulusBase64)
+                         && !string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaExponentBase64));
+        if (hasRsa)
+        {
+            var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, TenantOptions.Crypto);
+            Request.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
+            Request.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
+        }
 
         if (Request.Headers.Contains("Authorization"))
         {
             Request.Headers.Authorization = null;
         }
 
-        try
+        // Avoid token acquisition on registration endpoint to prevent recursion and allow first-time register
+        var registerPathNorm = (TenantOptions.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
+        var skipToken = !string.IsNullOrEmpty(registerPathNorm) &&
+                        (effectivePath.Equals(registerPathNorm, StringComparison.OrdinalIgnoreCase) ||
+                         effectivePath.StartsWith(registerPathNorm + "/", StringComparison.OrdinalIgnoreCase));
+
+        if (!skipToken)
         {
-            var JwtToken = await _auth.EnsureTokenAsync(TenantOptions, CancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(JwtToken))
+            try
             {
-                Request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtToken);
+                // If caller provided manual token via Swagger Authorize (X-Sepidar-Token), use it.
+                var ctx = _httpContextAccessor.HttpContext;
+                if (ctx != null && ctx.Request.Headers.TryGetValue("X-Sepidar-Token", out var manualToken) && !string.IsNullOrWhiteSpace(manualToken))
+                {
+                    Request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", manualToken.ToString());
+                }
+                else
+                {
+                    var JwtToken = await _auth.EnsureTokenAsync(TenantOptions, CancellationToken).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(JwtToken))
+                    {
+                        Request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtToken);
+                    }
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to ensure JWT for tenant {TenantId}", TenantOptions.TenantId);
-            throw;
+            catch (Exception ex)
+            {
+                // Allow downstream to decide (may return 401). Avoid turning it into 500.
+                _logger.LogWarning(ex, "Proceeding without JWT for tenant {TenantId}", TenantOptions.TenantId);
+            }
         }
 
         _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", TenantOptions.TenantId, Request.RequestUri);

@@ -173,6 +173,26 @@ docker compose up --build
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
 - برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV همان محیط (مثلاً `env/Production/gateway.env`) بسازید، شاخص تننت (`T0`, `T1`, ...) را افزایش دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
 
+### عیب‌یابی سریع
+
+- اگر Swagger یا درخواست‌ها 404 می‌دهند، ابتدا تطبیق تننت را ساده کنید تا تست محلی راحت شود. نمونه تنظیمات در `env/Production/gateway.env` اضافه شده است:
+  - `GW_T0_MATCH_HOSTNAMES=localhost`
+  - `GW_T0_MATCH_PATHBASE=/`
+  - `GW_T0_MATCH_HEADER_HEADERVALUES=MAIN`
+  سپس کانتینر را ری‌استارت کنید.
+- وضعیت احراز هویت/ثبت‌نام را از مسیر `GET /health/auth` بررسی کنید. این خروجی برای هر تننت نشان می‌دهد آیا Register و Login موفق بوده‌اند یا چه خطایی رخ داده است.
+- اگر کشف خودکار Register از Swagger کار نمی‌کند، مسیر Swagger سپیدار را صراحتاً تنظیم کنید (مثلاً `swagger/v1/swagger.json`) یا مسیر Register را مستقیم در ENV مشخص نمایید (مثلاً `api/Device/RegisterDevice/`).
+
+### استقرار پشت Nginx (سناریوی دو سروره)
+
+- اگر Nginx روی سرور دیگری اجرا می‌شود و قصد دارید آن را به گیت‌وی متصل کنید:
+  - یک شبکهٔ داکر مشترک بسازید: `docker network create netkey` (فقط یک‌بار).
+  - سرویس گیت‌وی با نام کانتینر `sepidar-gateway` روی همین شبکه بالا می‌آید (در `docker-compose.yml` تنظیم شد).
+  - در Nginx، upstream به `http://sepidar-gateway:5259` اشاره کند. نمونه پیکربندی در `docker/nginx/conf.d/sepidar-gateway.conf` موجود است.
+- اگر هر دو روی یک میزبان هستند، کافی است هر دو کانتینر را به شبکهٔ مشترک `netkey` متصل کنید.
+
+نکتهٔ مهم: مقدار `GW_T0_SEPIDAR_BASEURL` باید آدرس سرویس سپیدارِ سمت مشتری باشد؛ یعنی همان سرویسی که گیت‌وی باید به آن وصل شود (مثلاً `http://10.10.10.20:7373`). مطمئن شوید این آدرس از داخل کانتینر گیت‌وی قابل دسترسی است.
+
 ## Security notes
 
 - اگر برای مشتری‌ای API Key تعریف کردید، کلاینت داخلی باید `X-API-Key` متناظر را ارسال کند؛ در غیر این صورت این هدر اختیاری است.

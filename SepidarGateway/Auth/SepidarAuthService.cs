@@ -17,7 +17,14 @@ public sealed class SepidarAuthService : ISepidarAuth
     private readonly ILogger<SepidarAuthService> _logger;
     private readonly ConcurrentDictionary<string, TenantAuthState> _states = new();
 
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+    private static readonly JsonSerializerOptions PreserveNamesOptions = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = null
+    };
 
     public SepidarAuthService(
         IHttpClientFactory httpClientFactory,
@@ -32,6 +39,12 @@ public sealed class SepidarAuthService : ISepidarAuth
     public async Task EnsureDeviceRegisteredAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
         var AuthState = GetState(tenant.TenantId);
+        if (!AuthState.Registered && HasRsaConfigured(tenant.Crypto))
+        {
+            // Assume device already registered when RSA is pre-provisioned via configuration
+            AuthState.Registered = true;
+            return;
+        }
         if (AuthState.Registered)
         {
             return;
@@ -161,20 +174,75 @@ public sealed class SepidarAuthService : ISepidarAuth
         _logger.LogInformation("Registering Sepidar device for tenant {TenantId}", tenant.TenantId);
         var HttpClient = CreateHttpClient(tenant);
 
-        var DevicePayload = JsonSerializer.Serialize(new
+        string DevicePayload;
+        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "Detailed";
+        if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            DeviceSerial = tenant.Sepidar.DeviceSerial,
-            IntegrationId = tenant.Sepidar.IntegrationId,
-            Timestamp = DateTimeOffset.UtcNow
-        }, SerializerOptions);
+            // Encrypt only IntegrationID (AES-128 with key = serial+serial)
+            DevicePayload = tenant.Sepidar.IntegrationId ?? string.Empty;
+        }
+        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            var title = string.IsNullOrWhiteSpace(tenant.Sepidar.DeviceTitle)
+                ? (tenant.Sepidar.DeviceSerial ?? string.Empty)
+                : tenant.Sepidar.DeviceTitle!;
+            DevicePayload = title;
+        }
+        else
+        {
+            DevicePayload = JsonSerializer.Serialize(new
+            {
+                DeviceSerial = tenant.Sepidar.DeviceSerial,
+                IntegrationId = tenant.Sepidar.IntegrationId,
+                Timestamp = DateTimeOffset.UtcNow
+            }, PreserveNamesOptions);
+        }
 
-        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
-        var RequestBody = JsonSerializer.Serialize(new
+        var variantBodies = new List<string>();
+        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload); // AES-256 default
+        string RequestBody;
+        var integrationIdNumber = 0;
+        int.TryParse(tenant.Sepidar.IntegrationId, out integrationIdNumber);
+        if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            Cypher = EncryptedPayload.CipherText,
-            IV = EncryptedPayload.IvBase64,
-            DeviceSerial = tenant.Sepidar.DeviceSerial
-        }, SerializerOptions);
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+            // AES-128 fallback variant (some deployments expect 16-byte key)
+            var enc128 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 16);
+            var body128 = JsonSerializer.Serialize(new
+            {
+                Cypher = enc128.CipherText,
+                IV = enc128.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(body128);
+        }
+        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+        }
+        else
+        {
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber,
+                DeviceSerial = tenant.Sepidar.DeviceSerial
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+        }
 
         var AttemptedPaths = new List<string>();
         var ProcessedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -192,49 +260,27 @@ public sealed class SepidarAuthService : ISepidarAuth
                 }
 
                 AttemptedPaths.Add(RegisterPath);
-                var RegisterUri = BuildTenantUri(tenant, RegisterPath, includeApiVersionQuery: true);
 
-                using var RegisterRequest = new HttpRequestMessage(HttpMethod.Post, RegisterUri)
+                var success = false;
+                foreach (var body in variantBodies)
                 {
-                    Content = new StringContent(RequestBody, Encoding.UTF8, "application/json")
-                };
-
-                if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
-                {
-                    RegisterRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
+                    // try WITHOUT api-version
+                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
+                    if (success) break;
+                    // then WITH api-version
+                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
+                    if (success) break;
                 }
 
-                RegisterRequest.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-                RegisterRequest.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
-
-                using var RegisterResponse = await HttpClient.SendAsync(RegisterRequest, cancellationToken).ConfigureAwait(false);
-                if (RegisterResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+                if (!success)
                 {
-                    _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId}", RegisterPath, tenant.TenantId);
                     continue;
                 }
 
-                RegisterResponse.EnsureSuccessStatusCode();
-
-                var ResponseBody = await RegisterResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                var RegisterPayload = JsonSerializer.Deserialize<RegisterResponse>(ResponseBody, SerializerOptions)
-                                      ?? throw new InvalidOperationException("Invalid register response");
-
-                var PlainText = _crypto.DecryptRegisterPayload(
-                    tenant.Sepidar.DeviceSerial,
-                    RegisterPayload.Cypher,
-                    RegisterPayload.IV);
-
-                var TenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(PlainText, SerializerOptions)
-                                     ?? throw new InvalidOperationException("Invalid crypto payload");
-
-                tenant.Crypto.RsaPublicKeyXml = TenantCrypto.RsaPublicKeyXml;
-                tenant.Crypto.RsaModulusBase64 = TenantCrypto.RsaModulusBase64;
-                tenant.Crypto.RsaExponentBase64 = TenantCrypto.RsaExponentBase64;
                 return;
             }
 
-            if (DiscoveryAttempted)
+            if (DiscoveryAttempted || tenant.Sepidar.RegisterStrict)
             {
                 break;
             }
@@ -310,6 +356,62 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
+    private async Task<bool> AttemptRegisterAsync(HttpClient httpClient, TenantOptions tenant, string registerPath, string requestBody, bool includeApiVersion, CancellationToken cancellationToken)
+    {
+        var registerUri = BuildTenantUri(tenant, registerPath, includeApiVersionQuery: includeApiVersion);
+        using var registerRequest = new HttpRequestMessage(HttpMethod.Post, registerUri)
+        {
+            Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
+        };
+        // Optional cookie header if required by server during register
+        if (!string.IsNullOrWhiteSpace(tenant.Sepidar.RegisterCookie))
+        {
+            registerRequest.Headers.TryAddWithoutValidation("Cookie", tenant.Sepidar.RegisterCookie);
+        }
+
+        using var response = await httpClient.SendAsync(registerRequest, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId} (URI: {Uri})", registerPath, tenant.TenantId, registerUri);
+            return false;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            string snippet = string.Empty;
+            try
+            {
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+            }
+            catch { }
+
+            _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
+            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
+            {
+                // Stop flipping variants on clear semantic errors
+                response.EnsureSuccessStatusCode();
+            }
+            return false;
+        }
+
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var registerPayload = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
+                              ?? throw new InvalidOperationException("Invalid register response");
+        var plainText = _crypto.DecryptRegisterPayload(
+            tenant.Sepidar.DeviceSerial,
+            registerPayload.Cypher,
+            registerPayload.IV);
+
+        var tenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plainText, SerializerOptions)
+                           ?? throw new InvalidOperationException("Invalid crypto payload");
+
+        tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
+        tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
+        tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
+        return true;
+    }
+
     private async Task<LoginResult> LoginInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Logging in tenant {TenantId}", tenant.TenantId);
@@ -317,13 +419,11 @@ public sealed class SepidarAuthService : ISepidarAuth
         var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
-        var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: true);
+        // لاگین بدون api-version در Query بر اساس کرل موفق
+        var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: false);
 
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
-        if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
-        {
-            LoginRequest.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
-        }
+        // هدر api-version برای Login ارسال نمی‌شود تا کاملاً مطابق کرل باشد
 
         LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
         LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
@@ -421,7 +521,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             yield return tenant.Sepidar.RegisterPath;
         }
 
-        if (tenant.Sepidar.RegisterFallbackPaths is { Length: > 0 })
+        if (!tenant.Sepidar.RegisterStrict && tenant.Sepidar.RegisterFallbackPaths is { Length: > 0 })
         {
             foreach (var FallbackPath in tenant.Sepidar.RegisterFallbackPaths)
             {
@@ -432,12 +532,15 @@ public sealed class SepidarAuthService : ISepidarAuth
             }
         }
 
-        yield return "api/Devices/Register/";
-        yield return "api/Device/Register/";
-        yield return "api/Device/RegisterDevice/";
-        yield return "api/Devices/RegisterDevice/";
-        yield return "api/RegisterDevice/";
-        yield return "api/Register/";
+        if (!tenant.Sepidar.RegisterStrict)
+        {
+            yield return "api/Devices/Register/";
+            yield return "api/Device/Register/";
+            yield return "api/Device/RegisterDevice/";
+            yield return "api/Devices/RegisterDevice/";
+            yield return "api/RegisterDevice/";
+            yield return "api/Register/";
+        }
     }
 
     private static IEnumerable<string> ExpandPathVariants(string path)
@@ -518,5 +621,12 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? Token { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
         public DateTimeOffset LastAuthorizationCheck { get; set; } = DateTimeOffset.MinValue;
+    }
+
+    private static bool HasRsaConfigured(TenantCryptoOptions crypto)
+    {
+        return !string.IsNullOrWhiteSpace(crypto.RsaPublicKeyXml)
+               || (!string.IsNullOrWhiteSpace(crypto.RsaModulusBase64) &&
+                   !string.IsNullOrWhiteSpace(crypto.RsaExponentBase64));
     }
 }

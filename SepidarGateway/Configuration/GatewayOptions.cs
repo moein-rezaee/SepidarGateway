@@ -5,17 +5,19 @@ namespace SepidarGateway.Configuration;
 public class GatewayOptions
 {
     [Required]
-    public List<TenantOptions> Tenants { get; set; } = new();
+    public TenantOptions Tenant { get; set; } = new();
 
     public OcelotRootOptions Ocelot { get; set; } = new();
 }
 
 public class TenantOptions
 {
-    [Required]
-    public string TenantId { get; set; } = string.Empty;
+    // Single-customer mode: no external TenantId required
+    public string TenantId { get; set; } = "main";
 
-    public TenantMatchOptions Match { get; set; } = new();
+    // Matching is removed in single-tenant mode, but kept for backward compatibility
+    public TenantMatchOptions? Match { get; set; }
+        = null;
 
     public SepidarEndpointOptions Sepidar { get; set; } = new();
 
@@ -76,19 +78,34 @@ public class SepidarEndpointOptions
 
     public string[]? RegisterFallbackPaths { get; set; } = new[] { "api/Device/Register/" };
 
+    // When true, only the configured RegisterPath (and optional RegisterFallbackPaths) are attempted.
+    // No built-in candidates or Swagger discovery will be used. Useful for strict environments.
+    public bool RegisterStrict { get; set; } = true;
+
+    // Optional cookie header value required by some servers during Register (e.g., "__NCTRACE=...")
+    public string? RegisterCookie { get; set; }
+
     public string LoginPath { get; set; } = "api/users/login/";
 
     public string IsAuthorizedPath { get; set; } = "api/IsAuthorized/";
 
     public string SwaggerDocumentPath { get; set; } = "swagger/sepidar/swagger.json";
+
+    // Register payload mode:
+    // - Detailed: JSON { DeviceSerial, IntegrationId, Timestamp } encrypted
+    // - SimpleTitle: AES of DeviceTitle (or DeviceSerial if title is empty)
+    // - IntegrationOnly: AES-128 of IntegrationId only (per Sepidar PDF/Python sample)
+    public string RegisterPayloadMode { get; set; } = "Detailed"; // Detailed | SimpleTitle | IntegrationOnly
+
+    // Optional friendly title for the device used when RegisterPayloadMode = SimpleTitle
+    public string? DeviceTitle { get; set; }
 }
 
 public class TenantCredentialOptions
 {
-    [Required]
+    // Optional at startup; /device/login می‌تواند مقداردهی کند
     public string UserName { get; set; } = string.Empty;
 
-    [Required]
     public string Password { get; set; } = string.Empty;
 }
 
