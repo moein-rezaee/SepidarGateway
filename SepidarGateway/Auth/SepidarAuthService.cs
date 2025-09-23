@@ -421,6 +421,22 @@ public sealed class SepidarAuthService : ISepidarAuth
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
         // لاگین بدون api-version در Query بر اساس کرل موفق
+        var userName = tenant.Credentials.UserName?.Trim();
+        var password = tenant.Credentials.Password?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            throw new InvalidOperationException("Tenant username is not configured.");
+        }
+
+        if (string.IsNullOrEmpty(password))
+        {
+            throw new InvalidOperationException("Tenant password is not configured.");
+        }
+
+        tenant.Credentials.UserName = userName;
+        tenant.Credentials.Password = password;
+
         var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: false);
 
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
@@ -431,13 +447,15 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
         LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
-        var PasswordHash = ComputePasswordHash(tenant.Credentials.Password);
+        var PasswordHash = LooksLikeMd5(password)
+            ? password.ToLowerInvariant()
+            : ComputePasswordHash(password);
 
         var LoginPayload = JsonSerializer.Serialize(new
         {
             UserName = tenant.Credentials.UserName,
             PasswordHash = PasswordHash
-        }, SerializerOptions);
+        }, PreserveNamesOptions);
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
@@ -691,6 +709,24 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
 
         return HashBuilder.ToString();
+    }
+
+    private static bool LooksLikeMd5(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length != 32)
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!Uri.IsHexDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private sealed record RegisterResponse(string Cypher, string IV)
