@@ -236,7 +236,12 @@ deviceGroup.MapPost("/register", async (
 
     var tenant = opt.CurrentValue.Tenant;
     tenant.Sepidar.DeviceSerial = req.DeviceSerial.Trim();
-    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId)) tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
+    tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
+    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId))
+    {
+        return Results.BadRequest(new { error = "Unable to derive IntegrationID from deviceSerial" });
+    }
+    tenant.Sepidar.RegisterPayloadMode = "IntegrationOnly";
 
     try
     {
@@ -684,8 +689,23 @@ static bool IsAdminAuthorized(HttpContext ctx)
 
 static string DeriveIntegrationId(string serial)
 {
-    if (string.IsNullOrEmpty(serial)) return string.Empty;
-    return serial.Length >= 4 ? serial.Substring(0, 4) : serial;
+    if (string.IsNullOrWhiteSpace(serial))
+    {
+        return string.Empty;
+    }
+
+    var digits = new string(serial.Where(char.IsDigit).ToArray());
+    if (digits.Length == 0)
+    {
+        return string.Empty;
+    }
+
+    if (digits.Length >= 4)
+    {
+        return digits.Substring(0, 4);
+    }
+
+    return digits.PadRight(4, '0');
 }
 
 public partial class Program;

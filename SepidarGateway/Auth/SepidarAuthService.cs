@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -196,10 +197,16 @@ public sealed class SepidarAuthService : ISepidarAuth
         var HttpClient = CreateHttpClient(tenant);
 
         string DevicePayload;
-        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "Detailed";
+        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim();
+        if (string.IsNullOrWhiteSpace(payloadMode))
+        {
+            payloadMode = "Detailed";
+        }
+
+        var integrationIdValue = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            DevicePayload = tenant.Sepidar.IntegrationId ?? string.Empty;
+            DevicePayload = integrationIdValue;
         }
         else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
         {
@@ -213,54 +220,67 @@ public sealed class SepidarAuthService : ISepidarAuth
             DevicePayload = JsonSerializer.Serialize(new
             {
                 DeviceSerial = tenant.Sepidar.DeviceSerial,
-                IntegrationId = tenant.Sepidar.IntegrationId,
+                IntegrationId = integrationIdValue,
                 Timestamp = DateTimeOffset.UtcNow
             }, PreserveNamesOptions);
         }
 
+        if (string.IsNullOrWhiteSpace(integrationIdValue))
+        {
+            throw new InvalidOperationException("Integration ID is not configured.");
+        }
+
+        if (!int.TryParse(integrationIdValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integrationIdNumber))
+        {
+            throw new InvalidOperationException($"Integration ID '{integrationIdValue}' is not numeric.");
+        }
+
         var variantBodies = new List<string>();
-        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
-        string RequestBody;
-        var integrationIdNumber = 0;
-        int.TryParse(tenant.Sepidar.IntegrationId, out integrationIdNumber);
+
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            RequestBody = JsonSerializer.Serialize(new
-            {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
             var enc128 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 16);
-            var body128 = JsonSerializer.Serialize(new
+            variantBodies.Add(JsonSerializer.Serialize(new
             {
                 Cypher = enc128.CipherText,
                 IV = enc128.IvBase64,
                 IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(body128);
-        }
-        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
-        {
-            RequestBody = JsonSerializer.Serialize(new
+            }, PreserveNamesOptions));
+
+            var enc256 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 32);
+            if (!string.Equals(enc256.CipherText, enc128.CipherText, StringComparison.Ordinal) ||
+                !string.Equals(enc256.IvBase64, enc128.IvBase64, StringComparison.Ordinal))
             {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = enc256.CipherText,
+                    IV = enc256.IvBase64,
+                    IntegrationID = integrationIdNumber
+                }, PreserveNamesOptions));
+            }
         }
         else
         {
-            RequestBody = JsonSerializer.Serialize(new
+            var encryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
+            if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
             {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber,
-                DeviceSerial = tenant.Sepidar.DeviceSerial
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = encryptedPayload.CipherText,
+                    IV = encryptedPayload.IvBase64,
+                    IntegrationID = integrationIdNumber
+                }, PreserveNamesOptions));
+            }
+            else
+            {
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = encryptedPayload.CipherText,
+                    IV = encryptedPayload.IvBase64,
+                    IntegrationID = integrationIdNumber,
+                    DeviceSerial = tenant.Sepidar.DeviceSerial
+                }, PreserveNamesOptions));
+            }
         }
 
         var AttemptedPaths = new List<string>();
