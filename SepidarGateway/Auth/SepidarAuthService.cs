@@ -461,13 +461,13 @@ public sealed class SepidarAuthService : ISepidarAuth
                 _logger.LogError("Register endpoint {Path} returned an unrecognized payload for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, tenant.TenantId, registerUri, snippet);
                 return false;
             }
-            var plainText = _crypto.DecryptRegisterPayload(
-                tenant.Sepidar.DeviceSerial,
-                registerPayload.Cypher,
-                registerPayload.IV);
+        var plainText = _crypto.DecryptRegisterPayload(
+            tenant.Sepidar.DeviceSerial,
+            registerPayload.Cypher,
+            registerPayload.IV);
 
-            var tenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plainText, SerializerOptions)
-                               ?? throw new InvalidOperationException("Invalid crypto payload");
+        var tenantCrypto = ParseRegisterCryptoResponse(plainText)
+                           ?? throw new InvalidOperationException("Invalid crypto payload");
 
             tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
             tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
@@ -756,6 +756,81 @@ public sealed class SepidarAuthService : ISepidarAuth
     }
 
     private sealed record RegisterResponse(string Cypher, string IV);
+
+    private static RegisterCryptoResponse? ParseRegisterCryptoResponse(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return null;
+        }
+
+        var trimmed = payload.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '<')
+        {
+            try
+            {
+                var document = XDocument.Parse(trimmed);
+                var root = document.Root;
+                if (root is null)
+                {
+                    return null;
+                }
+
+                static string? ReadElement(XElement rootElement, string name)
+                {
+                    return rootElement
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?
+                        .Value;
+                }
+
+                var publicKeyXml = ReadElement(root, "RsaPublicKeyXml");
+                var modulus = ReadElement(root, "RsaModulusBase64");
+                var exponent = ReadElement(root, "RsaExponentBase64");
+
+                if (string.IsNullOrWhiteSpace(publicKeyXml))
+                {
+                    var rsaNode = root
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, "RSAKeyValue", StringComparison.OrdinalIgnoreCase));
+
+                    if (rsaNode is not null)
+                    {
+                        publicKeyXml = rsaNode.ToString(SaveOptions.DisableFormatting);
+                    }
+                    else if (string.Equals(root.Name.LocalName, "RSAKeyValue", StringComparison.OrdinalIgnoreCase))
+                    {
+                        publicKeyXml = root.ToString(SaveOptions.DisableFormatting);
+                    }
+                }
+
+                return new RegisterCryptoResponse
+                {
+                    RsaPublicKeyXml = string.IsNullOrWhiteSpace(publicKeyXml) ? null : publicKeyXml,
+                    RsaModulusBase64 = string.IsNullOrWhiteSpace(modulus) ? null : modulus.Trim(),
+                    RsaExponentBase64 = string.IsNullOrWhiteSpace(exponent) ? null : exponent.Trim()
+                };
+            }
+            catch (Exception ex) when (ex is XmlException or InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RegisterCryptoResponse>(trimmed, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private sealed record RegisterCryptoResponse
     {
