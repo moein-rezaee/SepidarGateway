@@ -39,17 +39,9 @@ public sealed class SepidarCryptoService : ISepidarCrypto
     {
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
-        // طبق داکیومنت/نمونه Python: مقدار RSA باید روی بایت‌های UUID (16 بایت) اعمال شود،
-        // نه روی متن رشته. در صورت امکان رشته را به Guid تبدیل و از بایت‌های آن استفاده می‌کنیم.
-        byte[] ArbitraryBytes;
-        if (Guid.TryParse(arbitraryCode, out var guidValue))
-        {
-            ArbitraryBytes = guidValue.ToByteArray();
-        }
-        else
-        {
-            ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
-        }
+        // طبق مستند رسمی، مقدار رمز شده باید همان رشته ارسال شده در هدر ArbitraryCode باشد.
+        // بنابراین همیشه رشته را با UTF8 به بایت تبدیل می‌کنیم تا پس از رمزگشایی دقیقاً همان مقدار بازسازی شود.
+        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
         var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
         return Convert.ToBase64String(EncryptedBytes);
     }
