@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -174,74 +175,74 @@ public sealed class SepidarAuthService : ISepidarAuth
         _logger.LogInformation("Registering Sepidar device for tenant {TenantId}", tenant.TenantId);
         var HttpClient = CreateHttpClient(tenant);
 
+        var deviceSerial = tenant.Sepidar.DeviceSerial?.Trim();
+        if (string.IsNullOrWhiteSpace(deviceSerial))
+        {
+            throw new InvalidOperationException("Tenant device serial is not configured.");
+        }
+
+        tenant.Sepidar.DeviceSerial = deviceSerial;
+
+        var derivedIntegrationId = DeriveIntegrationIdFromSerial(deviceSerial);
+        if (string.IsNullOrWhiteSpace(derivedIntegrationId))
+        {
+            throw new InvalidOperationException("Unable to derive IntegrationID from device serial.");
+        }
+
+        var configuredIntegrationId = tenant.Sepidar.IntegrationId?.Trim();
+        if (!string.Equals(configuredIntegrationId, derivedIntegrationId, StringComparison.Ordinal))
+        {
+            configuredIntegrationId = derivedIntegrationId;
+            tenant.Sepidar.IntegrationId = configuredIntegrationId;
+        }
+
+        if (!int.TryParse(configuredIntegrationId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integrationIdNumber))
+        {
+            throw new InvalidOperationException($"IntegrationID '{configuredIntegrationId}' must be a numeric value.");
+        }
+
+        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "IntegrationOnly";
         string DevicePayload;
-        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "Detailed";
-        if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
-        {
-            // Encrypt only IntegrationID (AES-128 with key = serial+serial)
-            DevicePayload = tenant.Sepidar.IntegrationId ?? string.Empty;
-        }
-        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
-        {
-            var title = string.IsNullOrWhiteSpace(tenant.Sepidar.DeviceTitle)
-                ? (tenant.Sepidar.DeviceSerial ?? string.Empty)
-                : tenant.Sepidar.DeviceTitle!;
-            DevicePayload = title;
-        }
-        else
+        if (string.Equals(payloadMode, "Detailed", StringComparison.OrdinalIgnoreCase))
         {
             DevicePayload = JsonSerializer.Serialize(new
             {
                 DeviceSerial = tenant.Sepidar.DeviceSerial,
-                IntegrationId = tenant.Sepidar.IntegrationId,
+                IntegrationId = configuredIntegrationId,
                 Timestamp = DateTimeOffset.UtcNow
             }, PreserveNamesOptions);
         }
+        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            var title = string.IsNullOrWhiteSpace(tenant.Sepidar.DeviceTitle)
+                ? tenant.Sepidar.DeviceSerial
+                : tenant.Sepidar.DeviceTitle!;
+            DevicePayload = title ?? string.Empty;
+        }
+        else
+        {
+            DevicePayload = configuredIntegrationId;
+        }
 
         var variantBodies = new List<string>();
-        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload); // AES-256 default
-        string RequestBody;
-        var integrationIdNumber = 0;
-        int.TryParse(tenant.Sepidar.IntegrationId, out integrationIdNumber);
+        var encryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload); // AES-256 default
+        variantBodies.Add(JsonSerializer.Serialize(new
+        {
+            Cypher = encryptedPayload.CipherText,
+            IV = encryptedPayload.IvBase64,
+            IntegrationID = integrationIdNumber
+        }, PreserveNamesOptions));
+
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            RequestBody = JsonSerializer.Serialize(new
-            {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
             // AES-128 fallback variant (some deployments expect 16-byte key)
             var enc128 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 16);
-            var body128 = JsonSerializer.Serialize(new
+            variantBodies.Add(JsonSerializer.Serialize(new
             {
                 Cypher = enc128.CipherText,
                 IV = enc128.IvBase64,
                 IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(body128);
-        }
-        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
-        {
-            RequestBody = JsonSerializer.Serialize(new
-            {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
-        }
-        else
-        {
-            RequestBody = JsonSerializer.Serialize(new
-            {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber,
-                DeviceSerial = tenant.Sepidar.DeviceSerial
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
+            }, PreserveNamesOptions));
         }
 
         var AttemptedPaths = new List<string>();
@@ -563,6 +564,31 @@ public sealed class SepidarAuthService : ISepidarAuth
         var LowerCase = WithTrailing.ToLowerInvariant();
         yield return LowerCase;
         yield return LowerCase.TrimEnd('/');
+    }
+
+    private static string DeriveIntegrationIdFromSerial(string serial)
+    {
+        if (string.IsNullOrWhiteSpace(serial))
+        {
+            return string.Empty;
+        }
+
+        var digits = new StringBuilder(capacity: 4);
+        foreach (var ch in serial)
+        {
+            if (!char.IsDigit(ch))
+            {
+                continue;
+            }
+
+            digits.Append(ch);
+            if (digits.Length >= 4)
+            {
+                break;
+            }
+        }
+
+        return digits.ToString();
     }
 
     private void PrepareHeaders(HttpRequestHeaders headers, TenantOptions tenant, string token)
