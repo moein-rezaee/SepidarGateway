@@ -42,21 +42,44 @@ AppBuilder.Services.AddHttpClient("SepidarAuth")
     {
         var options = builder.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
         var tenant = options.CurrentValue.Tenant;
+        var sepidar = tenant?.Sepidar;
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
 
-        var useProxy = tenant?.Sepidar?.UseProxy ?? true;
+        var useProxy = sepidar?.UseProxy ?? true;
         if (!useProxy)
         {
+            handler.Proxy = null;
             handler.UseProxy = false;
         }
         else
         {
-            handler.UseProxy = true;
-            handler.Proxy = WebRequest.DefaultWebProxy;
+            var proxyUrl = sepidar?.ProxyUrl;
+            if (!string.IsNullOrWhiteSpace(proxyUrl) && Uri.TryCreate(proxyUrl, UriKind.Absolute, out var proxyUri))
+            {
+                var proxy = new WebProxy(proxyUri)
+                {
+                    BypassProxyOnLocal = false
+                };
+
+                var proxyUser = sepidar?.ProxyUserName;
+                var proxyPassword = sepidar?.ProxyPassword;
+                if (!string.IsNullOrWhiteSpace(proxyUser))
+                {
+                    proxy.Credentials = new NetworkCredential(proxyUser, proxyPassword);
+                }
+
+                handler.Proxy = proxy;
+                handler.UseProxy = true;
+            }
+            else
+            {
+                handler.Proxy = WebRequest.DefaultWebProxy;
+                handler.UseProxy = handler.Proxy is not null;
+            }
         }
 
         builder.PrimaryHandler = handler;

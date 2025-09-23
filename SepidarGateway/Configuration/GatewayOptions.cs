@@ -94,6 +94,16 @@ public class SepidarEndpointOptions
     // پیش‌فرض: استفاده از پراکسی محیط (در صورت تنظیم). وقتی false باشد اتصال مستقیم برقرار می‌شود.
     public bool UseProxy { get; set; } = true;
 
+    // Optional explicit proxy configuration when UseProxy = true.
+    public string? ProxyUrl { get; set; }
+        = null;
+
+    public string? ProxyUserName { get; set; }
+        = null;
+
+    public string? ProxyPassword { get; set; }
+        = null;
+
     // Register payload mode:
     // - Detailed: JSON { DeviceSerial, IntegrationId, Timestamp } encrypted
     // - SimpleTitle: AES of DeviceTitle (or DeviceSerial if title is empty)
