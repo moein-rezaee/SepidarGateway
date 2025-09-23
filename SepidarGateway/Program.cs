@@ -273,8 +273,8 @@ deviceGroup.MapPost("/login", async (
 
     try
     {
-        var token = await auth.EnsureTokenAsync(tenant, ct);
-        return Results.Json(new { ok = true, token });
+        var login = await auth.LoginAsync(tenant, ct);
+        return Results.Json(new { ok = true, token = login.Token, login });
     }
     catch (Exception ex)
     {
@@ -390,8 +390,8 @@ adminGroup.MapPost("/login/auto", async (
 
     try
     {
-        var token = await auth.EnsureTokenAsync(clone, ct);
-        return Results.Json(new { ok = true, token });
+        var login = await auth.LoginAsync(clone, ct);
+        return Results.Json(new { ok = true, token = login.Token, login });
     }
     catch (Exception ex)
     {

@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SepidarGateway.Configuration;
+using SepidarGateway.Contracts;
 using SepidarGateway.Crypto;
 
 namespace SepidarGateway.Auth;
@@ -90,6 +91,25 @@ public sealed class SepidarAuthService : ISepidarAuth
             AuthState.Token = LoginResult.Token;
             AuthState.ExpiresAt = LoginResult.ExpiresAt;
             return LoginResult.Token;
+        }
+        finally
+        {
+            AuthState.Lock.Release();
+        }
+    }
+
+    public async Task<DeviceLoginResponseDto> LoginAsync(TenantOptions tenant, CancellationToken cancellationToken)
+    {
+        var AuthState = GetState(tenant.TenantId);
+        await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
+
+        await AuthState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            AuthState.Token = LoginResult.Token;
+            AuthState.ExpiresAt = LoginResult.ExpiresAt;
+            return MapLoginResult(LoginResult);
         }
         finally
         {
@@ -431,11 +451,10 @@ public sealed class SepidarAuthService : ISepidarAuth
         var LoginResponse = JsonSerializer.Deserialize<LoginResponse>(ResponseContent, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
-        var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(
-            tenant.Jwt.CacheSeconds,
-            LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds));
+        var ExpiresInSeconds = LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds;
+        var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
-        return new LoginResult(LoginResponse.Token, TokenExpiry);
+        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
     }
 
     private HttpClient CreateHttpClient(TenantOptions tenant)
@@ -686,13 +705,55 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? RsaExponentBase64 { get; set; }
     }
 
+    private static DeviceLoginResponseDto MapLoginResult(LoginResult loginResult)
+    {
+        var Response = loginResult.Response;
+        return new DeviceLoginResponseDto
+        {
+            Token = Response.Token,
+            ExpiresIn = loginResult.ExpiresInSeconds,
+            ExpiresAt = loginResult.ExpiresAt,
+            UserId = Response.UserID,
+            UserName = Response.UserName,
+            Title = Response.Title,
+            CanEditCustomer = Response.CanEditCustomer,
+            CanRegisterCustomer = Response.CanRegisterCustomer,
+            CanRegisterOrder = Response.CanRegisterOrder,
+            CanRegisterReturnOrder = Response.CanRegisterReturnOrder,
+            CanRegisterInvoice = Response.CanRegisterInvoice,
+            CanRegisterReturnInvoice = Response.CanRegisterReturnInvoice,
+            CanPrintInvoice = Response.CanPrintInvoice,
+            CanPrintReturnInvoice = Response.CanPrintReturnInvoice,
+            CanPrintInvoiceBeforeSend = Response.CanPrintInvoiceBeforeSend,
+            CanPrintReturnInvoiceBeforeSend = Response.CanPrintReturnInvoiceBeforeSend,
+            CanRevokeInvoice = Response.CanRevokeInvoice
+        };
+    }
+
     private sealed record LoginResponse
     {
         public string Token { get; set; } = string.Empty;
-        public int ExpiresIn { get; set; } = 0;
+        public int ExpiresIn { get; set; }
+        public int UserID { get; set; }
+        public string? UserName { get; set; }
+        public string? Title { get; set; }
+        public bool CanEditCustomer { get; set; }
+        public bool CanRegisterCustomer { get; set; }
+        public bool CanRegisterOrder { get; set; }
+        public bool CanRegisterReturnOrder { get; set; }
+        public bool CanRegisterInvoice { get; set; }
+        public bool CanRegisterReturnInvoice { get; set; }
+        public bool CanPrintInvoice { get; set; }
+        public bool CanPrintReturnInvoice { get; set; }
+        public bool CanPrintInvoiceBeforeSend { get; set; }
+        public bool CanPrintReturnInvoiceBeforeSend { get; set; }
+        public bool CanRevokeInvoice { get; set; }
     }
 
-    private sealed record LoginResult(string Token, DateTimeOffset ExpiresAt);
+    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds)
+    {
+        public string Token => Response.Token;
+    }
 
     private sealed class TenantAuthState
     {
