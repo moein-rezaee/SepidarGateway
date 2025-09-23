@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
@@ -10,7 +9,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 {
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload)
     {
-        return EncryptRegisterPayload(serialSeed, payload, 32);
+        return EncryptRegisterPayload(serialSeed, payload, 16);
     }
 
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload, int keyBytes)
@@ -29,10 +28,23 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 
     public string DecryptRegisterPayload(string serialSeed, string cipherTextBase64, string ivBase64)
     {
+        try
+        {
+            return DecryptRegisterPayloadInternal(serialSeed, cipherTextBase64, ivBase64, 16);
+        }
+        catch (CryptographicException) when (!string.IsNullOrEmpty(serialSeed))
+        {
+            // Older devices may still rely on AES-256; retry with a 32-byte key before failing.
+            return DecryptRegisterPayloadInternal(serialSeed, cipherTextBase64, ivBase64, 32);
+        }
+    }
+
+    private static string DecryptRegisterPayloadInternal(string serialSeed, string cipherTextBase64, string ivBase64, int keyBytes)
+    {
         using var AesCipher = Aes.Create();
         AesCipher.Mode = CipherMode.CBC;
         AesCipher.Padding = PaddingMode.PKCS7;
-        AesCipher.Key = DeriveKey(serialSeed, 32);
+        AesCipher.Key = DeriveKey(serialSeed, keyBytes);
         AesCipher.IV = Convert.FromBase64String(ivBase64);
 
         using var AesDecryptor = AesCipher.CreateDecryptor();
@@ -54,21 +66,28 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 
     private static byte[] DeriveKey(string serialSeed, int keyBytes)
     {
-        var seed = (serialSeed ?? string.Empty) + (serialSeed ?? string.Empty);
-        var bytes = Encoding.UTF8.GetBytes(seed);
+        var seedBytes = Encoding.UTF8.GetBytes(serialSeed ?? string.Empty);
 
-        if (bytes.Length == keyBytes)
+        if (seedBytes.Length == 0)
         {
-            return bytes;
+            return new byte[keyBytes];
         }
 
-        if (bytes.Length > keyBytes)
+        if (seedBytes.Length == keyBytes)
         {
-            return bytes.Take(keyBytes).ToArray();
+            return seedBytes;
         }
 
         var buffer = new byte[keyBytes];
-        Array.Copy(bytes, buffer, bytes.Length);
+        var position = 0;
+
+        while (position < keyBytes)
+        {
+            var bytesToCopy = Math.Min(seedBytes.Length, keyBytes - position);
+            Array.Copy(seedBytes, 0, buffer, position, bytesToCopy);
+            position += bytesToCopy;
+        }
+
         return buffer;
     }
 

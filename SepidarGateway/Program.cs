@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
@@ -34,7 +35,12 @@ AppBuilder.Services.AddHostedService<TenantLifecycleHostedService>();
 
 AppBuilder.Services.AddHttpContextAccessor();
 AppBuilder.Services.AddMemoryCache();
-AppBuilder.Services.AddHttpClient("SepidarAuth");
+AppBuilder.Services.AddHttpClient("SepidarAuth")
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        UseProxy = false,
+        AllowAutoRedirect = false
+    });
 
 AppBuilder.Services.AddCors(cors_options =>
 {
