@@ -183,16 +183,15 @@ public sealed class SepidarAuthService : ISepidarAuth
 
         tenant.Sepidar.DeviceSerial = deviceSerial;
 
-        var derivedIntegrationId = DeriveIntegrationIdFromSerial(deviceSerial);
-        if (string.IsNullOrWhiteSpace(derivedIntegrationId))
-        {
-            throw new InvalidOperationException("Unable to derive IntegrationID from device serial.");
-        }
-
         var configuredIntegrationId = tenant.Sepidar.IntegrationId?.Trim();
-        if (!string.Equals(configuredIntegrationId, derivedIntegrationId, StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(configuredIntegrationId))
         {
-            configuredIntegrationId = derivedIntegrationId;
+            configuredIntegrationId = DeriveIntegrationIdFromSerial(deviceSerial);
+            if (string.IsNullOrWhiteSpace(configuredIntegrationId))
+            {
+                throw new InvalidOperationException("IntegrationID is not configured and could not be derived from the device serial.");
+            }
+
             tenant.Sepidar.IntegrationId = configuredIntegrationId;
         }
 
@@ -388,11 +387,6 @@ public sealed class SepidarAuthService : ISepidarAuth
             catch { }
 
             _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
-            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
-            {
-                // Stop flipping variants on clear semantic errors
-                response.EnsureSuccessStatusCode();
-            }
             return false;
         }
 
