@@ -7,6 +7,8 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using SepidarGateway.Configuration;
 using SepidarGateway.Contracts;
 using SepidarGateway.Crypto;
@@ -452,8 +454,13 @@ public sealed class SepidarAuthService : ISepidarAuth
             }
 
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var registerPayload = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
-                                  ?? throw new InvalidOperationException("Invalid register response");
+            var registerPayload = ParseRegisterResponse(responseBody);
+            if (registerPayload is null)
+            {
+                var snippet = responseBody.Length > 500 ? responseBody.Substring(0, 500) + "..." : responseBody;
+                _logger.LogError("Register endpoint {Path} returned an unrecognized payload for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, tenant.TenantId, registerUri, snippet);
+                return false;
+            }
             var plainText = _crypto.DecryptRegisterPayload(
                 tenant.Sepidar.DeviceSerial,
                 registerPayload.Cypher,
@@ -688,6 +695,64 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
 
         return true;
+    }
+
+    private static RegisterResponse? ParseRegisterResponse(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return null;
+        }
+
+        var trimmed = responseBody.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '<')
+        {
+            try
+            {
+                var document = XDocument.Parse(trimmed);
+                var root = document.Root;
+                if (root is null)
+                {
+                    return null;
+                }
+
+                static string? ReadElement(XElement rootElement, string name)
+                {
+                    return rootElement
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?
+                        .Value;
+                }
+
+                var cypher = ReadElement(root, "Cypher");
+                var iv = ReadElement(root, "IV");
+
+                if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
+                {
+                    return null;
+                }
+
+                return new RegisterResponse(cypher.Trim(), iv.Trim());
+            }
+            catch (Exception ex) when (ex is XmlException or InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RegisterResponse>(trimmed, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private sealed record RegisterResponse(string Cypher, string IV);
