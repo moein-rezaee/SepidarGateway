@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Http;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
@@ -36,10 +38,28 @@ AppBuilder.Services.AddHostedService<TenantLifecycleHostedService>();
 AppBuilder.Services.AddHttpContextAccessor();
 AppBuilder.Services.AddMemoryCache();
 AppBuilder.Services.AddHttpClient("SepidarAuth")
-    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    .ConfigureHttpMessageHandlerBuilder(builder =>
     {
-        UseProxy = false,
-        AllowAutoRedirect = false
+        var options = builder.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
+        var tenant = options.CurrentValue.Tenant;
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All
+        };
+
+        var useProxy = tenant?.Sepidar?.UseProxy ?? true;
+        if (!useProxy)
+        {
+            handler.UseProxy = false;
+        }
+        else
+        {
+            handler.UseProxy = true;
+            handler.Proxy = WebRequest.DefaultWebProxy;
+        }
+
+        builder.PrimaryHandler = handler;
     });
 
 AppBuilder.Services.AddCors(cors_options =>
