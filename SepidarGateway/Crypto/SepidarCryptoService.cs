@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
@@ -9,10 +10,15 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 {
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload)
     {
+        return EncryptRegisterPayload(serialSeed, payload, 32);
+    }
+
+    public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload, int keyBytes)
+    {
         using var AesCipher = Aes.Create();
         AesCipher.Mode = CipherMode.CBC;
         AesCipher.Padding = PaddingMode.PKCS7;
-        AesCipher.Key = DeriveKey(serialSeed);
+        AesCipher.Key = DeriveKey(serialSeed, keyBytes);
         AesCipher.GenerateIV();
 
         using var AesEncryptor = AesCipher.CreateEncryptor();
@@ -26,7 +32,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
         using var AesCipher = Aes.Create();
         AesCipher.Mode = CipherMode.CBC;
         AesCipher.Padding = PaddingMode.PKCS7;
-        AesCipher.Key = DeriveKey(serialSeed);
+        AesCipher.Key = DeriveKey(serialSeed, 32);
         AesCipher.IV = Convert.FromBase64String(ivBase64);
 
         using var AesDecryptor = AesCipher.CreateDecryptor();
@@ -46,23 +52,24 @@ public sealed class SepidarCryptoService : ISepidarCrypto
         return Convert.ToBase64String(EncryptedBytes);
     }
 
-    private static byte[] DeriveKey(string serialSeed)
+    private static byte[] DeriveKey(string serialSeed, int keyBytes)
     {
-        var trimmedSerial = (serialSeed ?? string.Empty).Trim();
-        if (trimmedSerial.Length == 0)
+        var seed = (serialSeed ?? string.Empty) + (serialSeed ?? string.Empty);
+        var bytes = Encoding.UTF8.GetBytes(seed);
+
+        if (bytes.Length == keyBytes)
         {
-            throw new InvalidOperationException("Device serial is required for AES key derivation.");
+            return bytes;
         }
 
-        var doubled = trimmedSerial + trimmedSerial;
-        var doubledBytes = Encoding.UTF8.GetBytes(doubled);
-
-        if (doubledBytes.Length is 16 or 24 or 32)
+        if (bytes.Length > keyBytes)
         {
-            return doubledBytes;
+            return bytes.Take(keyBytes).ToArray();
         }
 
-        throw new InvalidOperationException("Device serial must be 8, 12, or 16 characters long to derive the AES key.");
+        var buffer = new byte[keyBytes];
+        Array.Copy(bytes, buffer, bytes.Length);
+        return buffer;
     }
 
     private static void ImportRsaParameters(RSA rsa, TenantCryptoOptions cryptoOptions)

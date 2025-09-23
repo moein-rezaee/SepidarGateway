@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -196,66 +195,73 @@ public sealed class SepidarAuthService : ISepidarAuth
         _logger.LogInformation("Registering Sepidar device for tenant {TenantId}", tenant.TenantId);
         var HttpClient = CreateHttpClient(tenant);
 
-        var deviceSerial = tenant.Sepidar.DeviceSerial?.Trim();
-        if (string.IsNullOrWhiteSpace(deviceSerial))
-        {
-            throw new InvalidOperationException("Tenant device serial is not configured.");
-        }
-
-        tenant.Sepidar.DeviceSerial = deviceSerial;
-
-        var configuredIntegrationId = tenant.Sepidar.IntegrationId?.Trim();
-        if (string.IsNullOrWhiteSpace(configuredIntegrationId))
-        {
-            configuredIntegrationId = DeriveIntegrationIdFromSerial(deviceSerial);
-            if (string.IsNullOrWhiteSpace(configuredIntegrationId))
-            {
-                throw new InvalidOperationException("IntegrationID is not configured and could not be derived from the device serial.");
-            }
-
-            tenant.Sepidar.IntegrationId = configuredIntegrationId;
-        }
-
-        if (!configuredIntegrationId.All(char.IsDigit))
-        {
-            throw new InvalidOperationException($"IntegrationID '{configuredIntegrationId}' must contain only digits.");
-        }
-
-        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "IntegrationOnly";
         string DevicePayload;
-        if (string.Equals(payloadMode, "Detailed", StringComparison.OrdinalIgnoreCase))
+        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "Detailed";
+        if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            DevicePayload = JsonSerializer.Serialize(new
-            {
-                DeviceSerial = tenant.Sepidar.DeviceSerial,
-                IntegrationId = configuredIntegrationId,
-                Timestamp = DateTimeOffset.UtcNow
-            }, PreserveNamesOptions);
+            DevicePayload = tenant.Sepidar.IntegrationId ?? string.Empty;
         }
         else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
         {
             var title = string.IsNullOrWhiteSpace(tenant.Sepidar.DeviceTitle)
-                ? tenant.Sepidar.DeviceSerial
+                ? (tenant.Sepidar.DeviceSerial ?? string.Empty)
                 : tenant.Sepidar.DeviceTitle!;
-            DevicePayload = title ?? string.Empty;
+            DevicePayload = title;
         }
         else
         {
-            DevicePayload = configuredIntegrationId;
+            DevicePayload = JsonSerializer.Serialize(new
+            {
+                DeviceSerial = tenant.Sepidar.DeviceSerial,
+                IntegrationId = tenant.Sepidar.IntegrationId,
+                Timestamp = DateTimeOffset.UtcNow
+            }, PreserveNamesOptions);
         }
 
-        var encryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
-
-        if (configuredIntegrationId.Length < 4)
+        var variantBodies = new List<string>();
+        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
+        string RequestBody;
+        var integrationIdNumber = 0;
+        int.TryParse(tenant.Sepidar.IntegrationId, out integrationIdNumber);
+        if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("IntegrationID must be at least four digits long.");
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+            var enc128 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 16);
+            var body128 = JsonSerializer.Serialize(new
+            {
+                Cypher = enc128.CipherText,
+                IV = enc128.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(body128);
         }
-
-        var integrationIdValue = int.Parse(configuredIntegrationId, CultureInfo.InvariantCulture);
-        var registerBody = JsonSerializer.Serialize(new RegisterRequest(
-            encryptedPayload.CipherText,
-            encryptedPayload.IvBase64,
-            integrationIdValue), PreserveNamesOptions);
+        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+        }
+        else
+        {
+            RequestBody = JsonSerializer.Serialize(new
+            {
+                Cypher = EncryptedPayload.CipherText,
+                IV = EncryptedPayload.IvBase64,
+                IntegrationID = integrationIdNumber,
+                DeviceSerial = tenant.Sepidar.DeviceSerial
+            }, PreserveNamesOptions);
+            variantBodies.Add(RequestBody);
+        }
 
         var AttemptedPaths = new List<string>();
         var ProcessedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -274,10 +280,20 @@ public sealed class SepidarAuthService : ISepidarAuth
 
                 AttemptedPaths.Add(RegisterPath);
 
-                var success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, registerBody, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
-                if (!success)
+                var success = false;
+                foreach (var body in variantBodies)
                 {
-                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, registerBody, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
+                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
+                    if (success)
+                    {
+                        break;
+                    }
+
+                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
+                    if (success)
+                    {
+                        break;
+                    }
                 }
 
                 if (!success)
@@ -423,15 +439,12 @@ public sealed class SepidarAuthService : ISepidarAuth
                 registerPayload.Cypher,
                 registerPayload.IV);
 
-            if (!TryApplyRegisterCryptoPayload(tenant, plainText))
-            {
-                throw new InvalidOperationException("Invalid crypto payload");
-            }
+            var tenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plainText, SerializerOptions)
+                               ?? throw new InvalidOperationException("Invalid crypto payload");
 
-            if (!string.IsNullOrWhiteSpace(registerPayload.DeviceTitle))
-            {
-                tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle.Trim();
-            }
+            tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
+            tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
+            tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
 
             return true;
         }
@@ -607,31 +620,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         yield return LowerCase.TrimEnd('/');
     }
 
-    private static string DeriveIntegrationIdFromSerial(string serial)
-    {
-        if (string.IsNullOrWhiteSpace(serial))
-        {
-            return string.Empty;
-        }
-
-        var digits = new StringBuilder(capacity: 4);
-        foreach (var ch in serial)
-        {
-            if (!char.IsDigit(ch))
-            {
-                continue;
-            }
-
-            digits.Append(ch);
-            if (digits.Length >= 4)
-            {
-                break;
-            }
-        }
-
-        return digits.ToString();
-    }
-
     private void PrepareHeaders(HttpRequestHeaders headers, TenantOptions tenant, string token)
     {
         headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
@@ -648,77 +636,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
         headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
-    }
-
-    private bool TryApplyRegisterCryptoPayload(TenantOptions tenant, string plainText)
-    {
-        if (string.IsNullOrWhiteSpace(plainText))
-        {
-            return false;
-        }
-
-        var sanitized = plainText.Trim();
-        sanitized = sanitized.TrimStart((char)0xFEFF);
-
-        if (sanitized.Length == 0)
-        {
-            return false;
-        }
-
-        if (sanitized.StartsWith("{", StringComparison.Ordinal))
-        {
-            try
-            {
-                var tenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(sanitized, SerializerOptions);
-                if (tenantCrypto is null)
-                {
-                    return false;
-                }
-
-                if (!string.IsNullOrWhiteSpace(tenantCrypto.RsaPublicKeyXml))
-                {
-                    tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
-                    tenant.Crypto.RsaModulusBase64 = null;
-                    tenant.Crypto.RsaExponentBase64 = null;
-                    return true;
-                }
-
-                if (!string.IsNullOrWhiteSpace(tenantCrypto.RsaModulusBase64) &&
-                    !string.IsNullOrWhiteSpace(tenantCrypto.RsaExponentBase64))
-                {
-                    tenant.Crypto.RsaPublicKeyXml = null;
-                    tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
-                    tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
-                    return true;
-                }
-
-                return false;
-            }
-            catch (JsonException)
-            {
-                return false;
-            }
-        }
-
-        var candidate = sanitized;
-        if (!candidate.StartsWith("<", StringComparison.Ordinal))
-        {
-            var xmlIndex = candidate.IndexOf('<');
-            if (xmlIndex >= 0)
-            {
-                candidate = candidate.Substring(xmlIndex);
-            }
-        }
-
-        if (candidate.Contains("<RSAKeyValue", StringComparison.OrdinalIgnoreCase))
-        {
-            tenant.Crypto.RsaPublicKeyXml = candidate;
-            tenant.Crypto.RsaModulusBase64 = null;
-            tenant.Crypto.RsaExponentBase64 = null;
-            return true;
-        }
-
-        return false;
     }
 
     private static string ComputePasswordHash(string password)
@@ -753,12 +670,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         return true;
     }
 
-    private sealed record RegisterRequest(string Cypher, string IV, int IntegrationID);
-
-    private sealed record RegisterResponse(string Cypher, string IV)
-    {
-        public string? DeviceTitle { get; init; }
-    }
+    private sealed record RegisterResponse(string Cypher, string IV);
 
     private sealed record RegisterCryptoResponse
     {

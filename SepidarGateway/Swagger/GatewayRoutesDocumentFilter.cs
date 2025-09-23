@@ -144,7 +144,7 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             var pathLower = NormalizedPath.Trim('/').ToLowerInvariant();
             if (pathLower.StartsWith("api/devices/register"))
             {
-                // Register request body follows Sepidar documentation (Cypher, IV, IntegrationID).
+                var mode = _gatewayOptions?.Tenant?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
                 var schema = new OpenApiSchema
                 {
                     Type = "object",
@@ -156,6 +156,11 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                     },
                     Required = new HashSet<string> { "Cypher", "IV", "IntegrationID" }
                 };
+
+                if (!string.Equals(mode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
+                {
+                    schema.Properties["DeviceSerial"] = new OpenApiSchema { Type = "string" };
+                }
 
                 GatewayOperation.RequestBody = new OpenApiRequestBody
                 {

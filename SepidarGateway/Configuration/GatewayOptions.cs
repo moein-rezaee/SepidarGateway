@@ -95,7 +95,7 @@ public class SepidarEndpointOptions
     // - Detailed: JSON { DeviceSerial, IntegrationId, Timestamp } encrypted
     // - SimpleTitle: AES of DeviceTitle (or DeviceSerial if title is empty)
     // - IntegrationOnly: AES-128 of IntegrationId only (per Sepidar PDF/Python sample)
-    public string RegisterPayloadMode { get; set; } = "IntegrationOnly"; // Detailed | SimpleTitle | IntegrationOnly
+    public string RegisterPayloadMode { get; set; } = "Detailed"; // Detailed | SimpleTitle | IntegrationOnly
 
     // Optional friendly title for the device used when RegisterPayloadMode = SimpleTitle
     public string? DeviceTitle { get; set; }
