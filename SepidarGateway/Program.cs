@@ -1,6 +1,9 @@
+using System.Net;
+using System.Net.Http;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
@@ -34,7 +37,53 @@ AppBuilder.Services.AddHostedService<TenantLifecycleHostedService>();
 
 AppBuilder.Services.AddHttpContextAccessor();
 AppBuilder.Services.AddMemoryCache();
-AppBuilder.Services.AddHttpClient("SepidarAuth");
+AppBuilder.Services.AddHttpClient("SepidarAuth")
+    .ConfigureHttpMessageHandlerBuilder(builder =>
+    {
+        var options = builder.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
+        var tenant = options.CurrentValue.Tenant;
+        var sepidar = tenant?.Sepidar;
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+        };
+
+        var useProxy = sepidar?.UseProxy ?? true;
+        if (!useProxy)
+        {
+            handler.Proxy = null;
+            handler.UseProxy = false;
+        }
+        else
+        {
+            var proxyUrl = sepidar?.ProxyUrl;
+            if (!string.IsNullOrWhiteSpace(proxyUrl) && Uri.TryCreate(proxyUrl, UriKind.Absolute, out var proxyUri))
+            {
+                var proxy = new WebProxy(proxyUri)
+                {
+                    BypassProxyOnLocal = false
+                };
+
+                var proxyUser = sepidar?.ProxyUserName;
+                var proxyPassword = sepidar?.ProxyPassword;
+                if (!string.IsNullOrWhiteSpace(proxyUser))
+                {
+                    proxy.Credentials = new NetworkCredential(proxyUser, proxyPassword);
+                }
+
+                handler.Proxy = proxy;
+                handler.UseProxy = true;
+            }
+            else
+            {
+                handler.Proxy = WebRequest.DefaultWebProxy;
+                handler.UseProxy = handler.Proxy is not null;
+            }
+        }
+
+        builder.PrimaryHandler = handler;
+    });
 
 AppBuilder.Services.AddCors(cors_options =>
 {
@@ -236,7 +285,12 @@ deviceGroup.MapPost("/register", async (
 
     var tenant = opt.CurrentValue.Tenant;
     tenant.Sepidar.DeviceSerial = req.DeviceSerial.Trim();
-    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId)) tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
+    tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
+    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId))
+    {
+        return Results.BadRequest(new { error = "Unable to derive IntegrationID from deviceSerial" });
+    }
+    tenant.Sepidar.RegisterPayloadMode = "IntegrationOnly";
 
     try
     {
@@ -273,8 +327,8 @@ deviceGroup.MapPost("/login", async (
 
     try
     {
-        var token = await auth.EnsureTokenAsync(tenant, ct);
-        return Results.Json(new { ok = true, token });
+        var login = await auth.LoginAsync(tenant, ct);
+        return Results.Json(new { ok = true, token = login.Token, login });
     }
     catch (Exception ex)
     {
@@ -390,8 +444,8 @@ adminGroup.MapPost("/login/auto", async (
 
     try
     {
-        var token = await auth.EnsureTokenAsync(clone, ct);
-        return Results.Json(new { ok = true, token });
+        var login = await auth.LoginAsync(clone, ct);
+        return Results.Json(new { ok = true, token = login.Token, login });
     }
     catch (Exception ex)
     {
@@ -684,8 +738,23 @@ static bool IsAdminAuthorized(HttpContext ctx)
 
 static string DeriveIntegrationId(string serial)
 {
-    if (string.IsNullOrEmpty(serial)) return string.Empty;
-    return serial.Length >= 4 ? serial.Substring(0, 4) : serial;
+    if (string.IsNullOrWhiteSpace(serial))
+    {
+        return string.Empty;
+    }
+
+    var digits = new string(serial.Where(char.IsDigit).ToArray());
+    if (digits.Length == 0)
+    {
+        return string.Empty;
+    }
+
+    if (digits.Length >= 4)
+    {
+        return digits.Substring(0, 4);
+    }
+
+    return digits.PadRight(4, '0');
 }
 
 public partial class Program;

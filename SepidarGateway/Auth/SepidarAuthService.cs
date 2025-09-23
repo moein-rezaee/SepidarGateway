@@ -1,11 +1,16 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using SepidarGateway.Configuration;
+using SepidarGateway.Contracts;
 using SepidarGateway.Crypto;
 
 namespace SepidarGateway.Auth;
@@ -96,6 +101,25 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
+    public async Task<DeviceLoginResponseDto> LoginAsync(TenantOptions tenant, CancellationToken cancellationToken)
+    {
+        var AuthState = GetState(tenant.TenantId);
+        await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
+
+        await AuthState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            AuthState.Token = LoginResult.Token;
+            AuthState.ExpiresAt = LoginResult.ExpiresAt;
+            return MapLoginResult(LoginResult);
+        }
+        finally
+        {
+            AuthState.Lock.Release();
+        }
+    }
+
     public async Task<bool> IsAuthorizedAsync(TenantOptions tenant, CancellationToken cancellationToken)
     {
         var AuthState = GetState(tenant.TenantId);
@@ -175,11 +199,16 @@ public sealed class SepidarAuthService : ISepidarAuth
         var HttpClient = CreateHttpClient(tenant);
 
         string DevicePayload;
-        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim() ?? "Detailed";
+        var payloadMode = tenant.Sepidar.RegisterPayloadMode?.Trim();
+        if (string.IsNullOrWhiteSpace(payloadMode))
+        {
+            payloadMode = "Detailed";
+        }
+
+        var integrationIdValue = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            // Encrypt only IntegrationID (AES-128 with key = serial+serial)
-            DevicePayload = tenant.Sepidar.IntegrationId ?? string.Empty;
+            DevicePayload = integrationIdValue;
         }
         else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
         {
@@ -193,55 +222,67 @@ public sealed class SepidarAuthService : ISepidarAuth
             DevicePayload = JsonSerializer.Serialize(new
             {
                 DeviceSerial = tenant.Sepidar.DeviceSerial,
-                IntegrationId = tenant.Sepidar.IntegrationId,
+                IntegrationId = integrationIdValue,
                 Timestamp = DateTimeOffset.UtcNow
             }, PreserveNamesOptions);
         }
 
+        if (string.IsNullOrWhiteSpace(integrationIdValue))
+        {
+            throw new InvalidOperationException("Integration ID is not configured.");
+        }
+
+        if (!int.TryParse(integrationIdValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integrationIdNumber))
+        {
+            throw new InvalidOperationException($"Integration ID '{integrationIdValue}' is not numeric.");
+        }
+
         var variantBodies = new List<string>();
-        var EncryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload); // AES-256 default
-        string RequestBody;
-        var integrationIdNumber = 0;
-        int.TryParse(tenant.Sepidar.IntegrationId, out integrationIdNumber);
+
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
-            RequestBody = JsonSerializer.Serialize(new
-            {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
-            // AES-128 fallback variant (some deployments expect 16-byte key)
             var enc128 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 16);
-            var body128 = JsonSerializer.Serialize(new
+            variantBodies.Add(JsonSerializer.Serialize(new
             {
                 Cypher = enc128.CipherText,
                 IV = enc128.IvBase64,
                 IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(body128);
-        }
-        else if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
-        {
-            RequestBody = JsonSerializer.Serialize(new
+            }, PreserveNamesOptions));
+
+            var enc256 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload, 32);
+            if (!string.Equals(enc256.CipherText, enc128.CipherText, StringComparison.Ordinal) ||
+                !string.Equals(enc256.IvBase64, enc128.IvBase64, StringComparison.Ordinal))
             {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = enc256.CipherText,
+                    IV = enc256.IvBase64,
+                    IntegrationID = integrationIdNumber
+                }, PreserveNamesOptions));
+            }
         }
         else
         {
-            RequestBody = JsonSerializer.Serialize(new
+            var encryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
+            if (string.Equals(payloadMode, "SimpleTitle", StringComparison.OrdinalIgnoreCase))
             {
-                Cypher = EncryptedPayload.CipherText,
-                IV = EncryptedPayload.IvBase64,
-                IntegrationID = integrationIdNumber,
-                DeviceSerial = tenant.Sepidar.DeviceSerial
-            }, PreserveNamesOptions);
-            variantBodies.Add(RequestBody);
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = encryptedPayload.CipherText,
+                    IV = encryptedPayload.IvBase64,
+                    IntegrationID = integrationIdNumber
+                }, PreserveNamesOptions));
+            }
+            else
+            {
+                variantBodies.Add(JsonSerializer.Serialize(new
+                {
+                    Cypher = encryptedPayload.CipherText,
+                    IV = encryptedPayload.IvBase64,
+                    IntegrationID = integrationIdNumber,
+                    DeviceSerial = tenant.Sepidar.DeviceSerial
+                }, PreserveNamesOptions));
+            }
         }
 
         var AttemptedPaths = new List<string>();
@@ -264,12 +305,17 @@ public sealed class SepidarAuthService : ISepidarAuth
                 var success = false;
                 foreach (var body in variantBodies)
                 {
-                    // try WITHOUT api-version
                     success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
-                    if (success) break;
-                    // then WITH api-version
+                    if (success)
+                    {
+                        break;
+                    }
+
                     success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
-                    if (success) break;
+                    if (success)
+                    {
+                        break;
+                    }
                 }
 
                 if (!success)
@@ -369,47 +415,66 @@ public sealed class SepidarAuthService : ISepidarAuth
             registerRequest.Headers.TryAddWithoutValidation("Cookie", tenant.Sepidar.RegisterCookie);
         }
 
-        using var response = await httpClient.SendAsync(registerRequest, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        HttpResponseMessage? response = null;
+        try
         {
-            _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId} (URI: {Uri})", registerPath, tenant.TenantId, registerUri);
+            response = await httpClient.SendAsync(registerRequest, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException httpException) when (httpException.InnerException is SocketException socketException)
+        {
+            _logger.LogError(httpException,
+                "Register endpoint {Path} connection failed for tenant {TenantId}. URI: {Uri}. SocketError: {SocketError}",
+                registerPath,
+                tenant.TenantId,
+                registerUri,
+                socketException.SocketErrorCode);
             return false;
         }
 
-        if (!response.IsSuccessStatusCode)
+        using (response)
         {
-            string snippet = string.Empty;
-            try
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId} (URI: {Uri})", registerPath, tenant.TenantId, registerUri);
+                return false;
             }
-            catch { }
 
-            _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
-            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
+            if (!response.IsSuccessStatusCode)
             {
-                // Stop flipping variants on clear semantic errors
-                response.EnsureSuccessStatusCode();
-            }
-            return false;
-        }
+                string snippet = string.Empty;
+                try
+                {
+                    var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                }
+                catch { }
 
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var registerPayload = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
-                              ?? throw new InvalidOperationException("Invalid register response");
+                _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
+                return false;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var registerPayload = ParseRegisterResponse(responseBody);
+            if (registerPayload is null)
+            {
+                var snippet = responseBody.Length > 500 ? responseBody.Substring(0, 500) + "..." : responseBody;
+                _logger.LogError("Register endpoint {Path} returned an unrecognized payload for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, tenant.TenantId, registerUri, snippet);
+                return false;
+            }
         var plainText = _crypto.DecryptRegisterPayload(
             tenant.Sepidar.DeviceSerial,
             registerPayload.Cypher,
             registerPayload.IV);
 
-        var tenantCrypto = JsonSerializer.Deserialize<RegisterCryptoResponse>(plainText, SerializerOptions)
+        var tenantCrypto = ParseRegisterCryptoResponse(plainText)
                            ?? throw new InvalidOperationException("Invalid crypto payload");
 
-        tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
-        tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
-        tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
-        return true;
+            tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
+            tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
+            tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
+
+            return true;
+        }
     }
 
     private async Task<LoginResult> LoginInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
@@ -420,6 +485,22 @@ public sealed class SepidarAuthService : ISepidarAuth
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
         // لاگین بدون api-version در Query بر اساس کرل موفق
+        var userName = tenant.Credentials.UserName?.Trim();
+        var password = tenant.Credentials.Password?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            throw new InvalidOperationException("Tenant username is not configured.");
+        }
+
+        if (string.IsNullOrEmpty(password))
+        {
+            throw new InvalidOperationException("Tenant password is not configured.");
+        }
+
+        tenant.Credentials.UserName = userName;
+        tenant.Credentials.Password = password;
+
         var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: false);
 
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
@@ -430,13 +511,15 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
         LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
-        var PasswordHash = ComputePasswordHash(tenant.Credentials.Password);
+        var PasswordHash = LooksLikeMd5(password)
+            ? password.ToLowerInvariant()
+            : ComputePasswordHash(password);
 
         var LoginPayload = JsonSerializer.Serialize(new
         {
             UserName = tenant.Credentials.UserName,
             PasswordHash = PasswordHash
-        }, SerializerOptions);
+        }, PreserveNamesOptions);
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
@@ -450,11 +533,10 @@ public sealed class SepidarAuthService : ISepidarAuth
         var LoginResponse = JsonSerializer.Deserialize<LoginResponse>(ResponseContent, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
-        var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(
-            tenant.Jwt.CacheSeconds,
-            LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds));
+        var ExpiresInSeconds = LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds;
+        var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
-        return new LoginResult(LoginResponse.Token, TokenExpiry);
+        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
     }
 
     private HttpClient CreateHttpClient(TenantOptions tenant)
@@ -597,7 +679,158 @@ public sealed class SepidarAuthService : ISepidarAuth
         return HashBuilder.ToString();
     }
 
+    private static bool LooksLikeMd5(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length != 32)
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!Uri.IsHexDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static RegisterResponse? ParseRegisterResponse(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return null;
+        }
+
+        var trimmed = responseBody.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '<')
+        {
+            try
+            {
+                var document = XDocument.Parse(trimmed);
+                var root = document.Root;
+                if (root is null)
+                {
+                    return null;
+                }
+
+                static string? ReadElement(XElement rootElement, string name)
+                {
+                    return rootElement
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?
+                        .Value;
+                }
+
+                var cypher = ReadElement(root, "Cypher");
+                var iv = ReadElement(root, "IV");
+
+                if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
+                {
+                    return null;
+                }
+
+                return new RegisterResponse(cypher.Trim(), iv.Trim());
+            }
+            catch (Exception ex) when (ex is XmlException or InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RegisterResponse>(trimmed, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private sealed record RegisterResponse(string Cypher, string IV);
+
+    private static RegisterCryptoResponse? ParseRegisterCryptoResponse(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return null;
+        }
+
+        var trimmed = payload.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '<')
+        {
+            try
+            {
+                var document = XDocument.Parse(trimmed);
+                var root = document.Root;
+                if (root is null)
+                {
+                    return null;
+                }
+
+                static string? ReadElement(XElement rootElement, string name)
+                {
+                    return rootElement
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?
+                        .Value;
+                }
+
+                var publicKeyXml = ReadElement(root, "RsaPublicKeyXml");
+                var modulus = ReadElement(root, "RsaModulusBase64");
+                var exponent = ReadElement(root, "RsaExponentBase64");
+
+                if (string.IsNullOrWhiteSpace(publicKeyXml))
+                {
+                    var rsaNode = root
+                        .Descendants()
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, "RSAKeyValue", StringComparison.OrdinalIgnoreCase));
+
+                    if (rsaNode is not null)
+                    {
+                        publicKeyXml = rsaNode.ToString(SaveOptions.DisableFormatting);
+                    }
+                    else if (string.Equals(root.Name.LocalName, "RSAKeyValue", StringComparison.OrdinalIgnoreCase))
+                    {
+                        publicKeyXml = root.ToString(SaveOptions.DisableFormatting);
+                    }
+                }
+
+                return new RegisterCryptoResponse
+                {
+                    RsaPublicKeyXml = string.IsNullOrWhiteSpace(publicKeyXml) ? null : publicKeyXml,
+                    RsaModulusBase64 = string.IsNullOrWhiteSpace(modulus) ? null : modulus.Trim(),
+                    RsaExponentBase64 = string.IsNullOrWhiteSpace(exponent) ? null : exponent.Trim()
+                };
+            }
+            catch (Exception ex) when (ex is XmlException or InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RegisterCryptoResponse>(trimmed, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private sealed record RegisterCryptoResponse
     {
@@ -606,13 +839,55 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? RsaExponentBase64 { get; set; }
     }
 
+    private static DeviceLoginResponseDto MapLoginResult(LoginResult loginResult)
+    {
+        var Response = loginResult.Response;
+        return new DeviceLoginResponseDto
+        {
+            Token = Response.Token,
+            ExpiresIn = loginResult.ExpiresInSeconds,
+            ExpiresAt = loginResult.ExpiresAt,
+            UserId = Response.UserID,
+            UserName = Response.UserName,
+            Title = Response.Title,
+            CanEditCustomer = Response.CanEditCustomer,
+            CanRegisterCustomer = Response.CanRegisterCustomer,
+            CanRegisterOrder = Response.CanRegisterOrder,
+            CanRegisterReturnOrder = Response.CanRegisterReturnOrder,
+            CanRegisterInvoice = Response.CanRegisterInvoice,
+            CanRegisterReturnInvoice = Response.CanRegisterReturnInvoice,
+            CanPrintInvoice = Response.CanPrintInvoice,
+            CanPrintReturnInvoice = Response.CanPrintReturnInvoice,
+            CanPrintInvoiceBeforeSend = Response.CanPrintInvoiceBeforeSend,
+            CanPrintReturnInvoiceBeforeSend = Response.CanPrintReturnInvoiceBeforeSend,
+            CanRevokeInvoice = Response.CanRevokeInvoice
+        };
+    }
+
     private sealed record LoginResponse
     {
         public string Token { get; set; } = string.Empty;
-        public int ExpiresIn { get; set; } = 0;
+        public int ExpiresIn { get; set; }
+        public int UserID { get; set; }
+        public string? UserName { get; set; }
+        public string? Title { get; set; }
+        public bool CanEditCustomer { get; set; }
+        public bool CanRegisterCustomer { get; set; }
+        public bool CanRegisterOrder { get; set; }
+        public bool CanRegisterReturnOrder { get; set; }
+        public bool CanRegisterInvoice { get; set; }
+        public bool CanRegisterReturnInvoice { get; set; }
+        public bool CanPrintInvoice { get; set; }
+        public bool CanPrintReturnInvoice { get; set; }
+        public bool CanPrintInvoiceBeforeSend { get; set; }
+        public bool CanPrintReturnInvoiceBeforeSend { get; set; }
+        public bool CanRevokeInvoice { get; set; }
     }
 
-    private sealed record LoginResult(string Token, DateTimeOffset ExpiresAt);
+    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds)
+    {
+        public string Token => Response.Token;
+    }
 
     private sealed class TenantAuthState
     {

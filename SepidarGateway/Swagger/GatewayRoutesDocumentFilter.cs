@@ -144,7 +144,6 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             var pathLower = NormalizedPath.Trim('/').ToLowerInvariant();
             if (pathLower.StartsWith("api/devices/register"))
             {
-                // Register request. Shape depends on RegisterPayloadMode; default to IntegrationOnly if set.
                 var mode = _gatewayOptions?.Tenant?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
                 var schema = new OpenApiSchema
                 {

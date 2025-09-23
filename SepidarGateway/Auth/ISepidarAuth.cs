@@ -1,10 +1,13 @@
 using SepidarGateway.Configuration;
+using SepidarGateway.Contracts;
 
 namespace SepidarGateway.Auth;
 
 public interface ISepidarAuth
 {
     Task EnsureDeviceRegisteredAsync(TenantOptions tenant, CancellationToken cancellationToken);
+
+    Task<DeviceLoginResponseDto> LoginAsync(TenantOptions tenant, CancellationToken cancellationToken);
 
     Task<string> EnsureTokenAsync(TenantOptions tenant, CancellationToken cancellationToken);
 

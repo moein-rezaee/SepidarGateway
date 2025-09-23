@@ -91,11 +91,24 @@ public class SepidarEndpointOptions
 
     public string SwaggerDocumentPath { get; set; } = "swagger/sepidar/swagger.json";
 
+    // پیش‌فرض: استفاده از پراکسی محیط (در صورت تنظیم). وقتی false باشد اتصال مستقیم برقرار می‌شود.
+    public bool UseProxy { get; set; } = true;
+
+    // Optional explicit proxy configuration when UseProxy = true.
+    public string? ProxyUrl { get; set; }
+        = null;
+
+    public string? ProxyUserName { get; set; }
+        = null;
+
+    public string? ProxyPassword { get; set; }
+        = null;
+
     // Register payload mode:
     // - Detailed: JSON { DeviceSerial, IntegrationId, Timestamp } encrypted
     // - SimpleTitle: AES of DeviceTitle (or DeviceSerial if title is empty)
     // - IntegrationOnly: AES-128 of IntegrationId only (per Sepidar PDF/Python sample)
-    public string RegisterPayloadMode { get; set; } = "Detailed"; // Detailed | SimpleTitle | IntegrationOnly
+    public string RegisterPayloadMode { get; set; } = "IntegrationOnly"; // Detailed | SimpleTitle | IntegrationOnly
 
     // Optional friendly title for the device used when RegisterPayloadMode = SimpleTitle
     public string? DeviceTitle { get; set; }

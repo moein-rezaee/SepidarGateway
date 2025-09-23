@@ -9,7 +9,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 {
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload)
     {
-        return EncryptRegisterPayload(serialSeed, payload, 32);
+        return EncryptRegisterPayload(serialSeed, payload, 16);
     }
 
     public (string CipherText, string IvBase64) EncryptRegisterPayload(string serialSeed, string payload, int keyBytes)
@@ -28,11 +28,23 @@ public sealed class SepidarCryptoService : ISepidarCrypto
 
     public string DecryptRegisterPayload(string serialSeed, string cipherTextBase64, string ivBase64)
     {
+        try
+        {
+            return DecryptRegisterPayloadInternal(serialSeed, cipherTextBase64, ivBase64, 16);
+        }
+        catch (CryptographicException) when (!string.IsNullOrEmpty(serialSeed))
+        {
+            // Older devices may still rely on AES-256; retry with a 32-byte key before failing.
+            return DecryptRegisterPayloadInternal(serialSeed, cipherTextBase64, ivBase64, 32);
+        }
+    }
+
+    private static string DecryptRegisterPayloadInternal(string serialSeed, string cipherTextBase64, string ivBase64, int keyBytes)
+    {
         using var AesCipher = Aes.Create();
         AesCipher.Mode = CipherMode.CBC;
         AesCipher.Padding = PaddingMode.PKCS7;
-        // Must mirror EncryptRegisterPayload key derivation (default 32 bytes)
-        AesCipher.Key = DeriveKey(serialSeed, 32);
+        AesCipher.Key = DeriveKey(serialSeed, keyBytes);
         AesCipher.IV = Convert.FromBase64String(ivBase64);
 
         using var AesDecryptor = AesCipher.CreateDecryptor();
@@ -45,37 +57,38 @@ public sealed class SepidarCryptoService : ISepidarCrypto
     {
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
-        // طبق داکیومنت/نمونه Python: مقدار RSA باید روی بایت‌های UUID (16 بایت) اعمال شود،
-        // نه روی متن رشته. در صورت امکان رشته را به Guid تبدیل و از بایت‌های آن استفاده می‌کنیم.
-        byte[] ArbitraryBytes;
-        if (Guid.TryParse(arbitraryCode, out var guidValue))
-        {
-            ArbitraryBytes = guidValue.ToByteArray();
-        }
-        else
-        {
-            ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
-        }
+        // طبق مستند رسمی، مقدار رمز شده باید همان رشته ارسال شده در هدر ArbitraryCode باشد.
+        // بنابراین همیشه رشته را با UTF8 به بایت تبدیل می‌کنیم تا پس از رمزگشایی دقیقاً همان مقدار بازسازی شود.
+        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
         var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
         return Convert.ToBase64String(EncryptedBytes);
     }
 
     private static byte[] DeriveKey(string serialSeed, int keyBytes)
     {
-        // Build keyBytes-length key: (serial + serial) then zero-pad/truncate.
-        var seed = (serialSeed ?? string.Empty) + (serialSeed ?? string.Empty);
-        var bytes = Encoding.UTF8.GetBytes(seed);
-        if (bytes.Length == keyBytes)
+        var seedBytes = Encoding.UTF8.GetBytes(serialSeed ?? string.Empty);
+
+        if (seedBytes.Length == 0)
         {
-            return bytes;
+            return new byte[keyBytes];
         }
-        if (bytes.Length > keyBytes)
+
+        if (seedBytes.Length == keyBytes)
         {
-            return bytes.Take(keyBytes).ToArray();
+            return seedBytes;
         }
-        var buf = new byte[keyBytes];
-        Array.Copy(bytes, buf, bytes.Length);
-        return buf;
+
+        var buffer = new byte[keyBytes];
+        var position = 0;
+
+        while (position < keyBytes)
+        {
+            var bytesToCopy = Math.Min(seedBytes.Length, keyBytes - position);
+            Array.Copy(seedBytes, 0, buffer, position, bytesToCopy);
+            position += bytesToCopy;
+        }
+
+        return buffer;
     }
 
     private static void ImportRsaParameters(RSA rsa, TenantCryptoOptions cryptoOptions)
