@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -244,12 +245,17 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
 
         var encryptedPayload = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial, DevicePayload);
-        var registerBody = JsonSerializer.Serialize(new
+
+        if (configuredIntegrationId.Length < 4)
         {
-            Cypher = encryptedPayload.CipherText,
-            IV = encryptedPayload.IvBase64,
-            IntegrationID = configuredIntegrationId
-        }, PreserveNamesOptions);
+            throw new InvalidOperationException("IntegrationID must be at least four digits long.");
+        }
+
+        var integrationIdValue = int.Parse(configuredIntegrationId, CultureInfo.InvariantCulture);
+        var registerBody = JsonSerializer.Serialize(new RegisterRequest(
+            encryptedPayload.CipherText,
+            encryptedPayload.IvBase64,
+            integrationIdValue), PreserveNamesOptions);
 
         var AttemptedPaths = new List<string>();
         var ProcessedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -371,46 +377,64 @@ public sealed class SepidarAuthService : ISepidarAuth
             registerRequest.Headers.TryAddWithoutValidation("Cookie", tenant.Sepidar.RegisterCookie);
         }
 
-        using var response = await httpClient.SendAsync(registerRequest, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        HttpResponseMessage? response = null;
+        try
         {
-            _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId} (URI: {Uri})", registerPath, tenant.TenantId, registerUri);
+            response = await httpClient.SendAsync(registerRequest, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException httpException) when (httpException.InnerException is SocketException socketException)
+        {
+            _logger.LogError(httpException,
+                "Register endpoint {Path} connection failed for tenant {TenantId}. URI: {Uri}. SocketError: {SocketError}",
+                registerPath,
+                tenant.TenantId,
+                registerUri,
+                socketException.SocketErrorCode);
             return false;
         }
 
-        if (!response.IsSuccessStatusCode)
+        using (response)
         {
-            string snippet = string.Empty;
-            try
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                _logger.LogWarning("Register endpoint {Path} not found for tenant {TenantId} (URI: {Uri})", registerPath, tenant.TenantId, registerUri);
+                return false;
             }
-            catch { }
 
-            _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
-            return false;
+            if (!response.IsSuccessStatusCode)
+            {
+                string snippet = string.Empty;
+                try
+                {
+                    var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                }
+                catch { }
+
+                _logger.LogError("Register endpoint {Path} returned {StatusCode} for tenant {TenantId}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.TenantId, registerUri, snippet);
+                return false;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var registerPayload = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
+                                  ?? throw new InvalidOperationException("Invalid register response");
+            var plainText = _crypto.DecryptRegisterPayload(
+                tenant.Sepidar.DeviceSerial,
+                registerPayload.Cypher,
+                registerPayload.IV);
+
+            if (!TryApplyRegisterCryptoPayload(tenant, plainText))
+            {
+                throw new InvalidOperationException("Invalid crypto payload");
+            }
+
+            if (!string.IsNullOrWhiteSpace(registerPayload.DeviceTitle))
+            {
+                tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle.Trim();
+            }
+
+            return true;
         }
-
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var registerPayload = JsonSerializer.Deserialize<RegisterResponse>(responseBody, SerializerOptions)
-                              ?? throw new InvalidOperationException("Invalid register response");
-        var plainText = _crypto.DecryptRegisterPayload(
-            tenant.Sepidar.DeviceSerial,
-            registerPayload.Cypher,
-            registerPayload.IV);
-
-        if (!TryApplyRegisterCryptoPayload(tenant, plainText))
-        {
-            throw new InvalidOperationException("Invalid crypto payload");
-        }
-
-        if (!string.IsNullOrWhiteSpace(registerPayload.DeviceTitle))
-        {
-            tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle.Trim();
-        }
-
-        return true;
     }
 
     private async Task<LoginResult> LoginInternalAsync(TenantOptions tenant, CancellationToken cancellationToken)
@@ -728,6 +752,8 @@ public sealed class SepidarAuthService : ISepidarAuth
 
         return true;
     }
+
+    private sealed record RegisterRequest(string Cypher, string IV, int IntegrationID);
 
     private sealed record RegisterResponse(string Cypher, string IV)
     {
