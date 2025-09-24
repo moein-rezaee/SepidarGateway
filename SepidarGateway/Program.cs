@@ -70,7 +70,13 @@ var app = builder.Build();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
+app.UseStaticFiles();
 app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint($"/swagger/{SwaggerConstants.DocumentName}/swagger.json", "Sepidar Gateway");
+    options.RoutePrefix = "swagger-ui";
+});
 
 const string StoplightHtml = """
 <!doctype html>
@@ -79,8 +85,8 @@ const string StoplightHtml = """
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sepidar Gateway Docs</title>
-    <link rel="stylesheet" href="https://unpkg.com/@stoplight/elements/styles.min.css" />
-    <script src="https://unpkg.com/@stoplight/elements/web-components.min.js"></script>
+    <link rel="stylesheet" href="/stoplight-elements.css" />
+    <script src="/stoplight-elements.js"></script>
     <style>
       body {
         margin: 0;
@@ -137,8 +143,8 @@ app.MapGet("/docs", () => Results.Content(StoplightHtml, "text/html"));
 app.MapGet("/docs/", () => Results.Content(StoplightHtml, "text/html"));
 
 app.MapGet("/", () => Results.Redirect("/docs"));
-app.MapGet("/swagger", () => Results.Redirect("/docs"));
-app.MapGet("/swagger/", () => Results.Redirect("/docs"));
+app.MapGet("/swagger", () => Results.Redirect("/swagger-ui"));
+app.MapGet("/swagger/", () => Results.Redirect("/swagger-ui"));
 
 app.Run();
 
