@@ -72,11 +72,6 @@ app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
 app.UseStaticFiles();
 app.UseSwagger();
-app.UseSwaggerUI(options =>
-{
-    options.SwaggerEndpoint($"/swagger/{SwaggerConstants.DocumentName}/swagger.json", "Sepidar Gateway");
-    options.RoutePrefix = "swagger-ui";
-});
 
 const string StoplightHtml = """
 <!doctype html>
@@ -139,12 +134,14 @@ if (gatewayOptions.Settings.SupportedVersions?.Length > 0)
 
 MapProxyRoutes(app, gatewayOptions.Routes, null);
 
-app.MapGet("/docs", () => Results.Content(StoplightHtml, "text/html"));
-app.MapGet("/docs/", () => Results.Content(StoplightHtml, "text/html"));
+IResult RenderStoplight() => Results.Content(StoplightHtml, "text/html");
 
-app.MapGet("/", () => Results.Redirect("/docs"));
-app.MapGet("/swagger", () => Results.Redirect("/swagger-ui"));
-app.MapGet("/swagger/", () => Results.Redirect("/swagger-ui"));
+app.MapGet("/docs", RenderStoplight);
+app.MapGet("/swagger", RenderStoplight);
+app.MapGet("/", () => Results.Redirect("/swagger"));
+
+app.MapFallback("/docs/{*path}", () => Results.Redirect("/docs"));
+app.MapFallback("/swagger/{*path}", () => Results.Redirect("/swagger"));
 
 app.Run();
 
