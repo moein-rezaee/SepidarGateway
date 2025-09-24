@@ -74,6 +74,7 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             Summary = $"Proxy {string.Join(", ", methods)} {normalizedPath}",
             Description = "Forwards the request to the configured Sepidar endpoint while enriching headers and authentication.",
             Tags = new List<OpenApiTag> { new() { Name = tag } },
+            Parameters = new List<OpenApiParameter>(),
             Responses = new OpenApiResponses
             {
                 ["200"] = new OpenApiResponse
