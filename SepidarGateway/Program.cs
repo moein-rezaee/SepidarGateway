@@ -70,7 +70,6 @@ var app = builder.Build();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
-app.UseStaticFiles();
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
@@ -80,39 +79,6 @@ app.UseSwaggerUI(options =>
     options.DisplayRequestDuration();
     options.EnableDeepLinking();
 });
-
-const string StoplightHtml = """
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Sepidar Gateway Docs</title>
-    <link rel="stylesheet" href="/stoplight-elements.css" />
-    <script src="/stoplight-elements.js"></script>
-    <style>
-      body {
-        margin: 0;
-        font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
-        background-color: #0f172a;
-      }
-
-      elements-api {
-        min-height: 100vh;
-      }
-    </style>
-  </head>
-  <body>
-    <elements-api
-      api-description-url="/swagger/sepidar/swagger.json"
-      router="hash"
-      layout="sidebar"
-      try-it="true"
-      hide-download-button="false"
-    ></elements-api>
-  </body>
-</html>
-""";
 
 app.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
 app.MapGet("/health/ready", async (ISepidarGatewayService service, CancellationToken ct) =>
@@ -142,12 +108,7 @@ if (gatewayOptions.Settings.SupportedVersions?.Length > 0)
 
 MapProxyRoutes(app, gatewayOptions.Routes, null);
 
-IResult RenderStoplight() => Results.Content(StoplightHtml, "text/html");
-
-app.MapGet("/docs", RenderStoplight);
 app.MapGet("/", () => Results.Redirect("/swagger"));
-
-app.MapFallback("/docs/{*path}", () => Results.Redirect("/docs"));
 
 app.Run();
 
