@@ -1,6 +1,7 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Linq;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using SepidarGateway.Contracts;
@@ -77,6 +78,14 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
     options.DisplayRequestDuration();
 });
+
+app.MapGet("/stoplight-elements.css", (IWebHostEnvironment env) =>
+    ServeStaticAsset(env, "stoplight/styles.min.css", "text/css"))
+    .ExcludeFromDescription();
+
+app.MapGet("/stoplight-elements.js", (IWebHostEnvironment env) =>
+    ServeStaticAsset(env, "stoplight/web-components.min.js", "application/javascript"))
+    .ExcludeFromDescription();
 
 var optionsMonitor = app.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
 var gatewayOptions = optionsMonitor.CurrentValue;
@@ -171,8 +180,19 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 
     group.MapPost("/Register", async (DeviceRegisterRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
-        await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
-        return Results.Ok(new { Ok = true });
+        try
+        {
+            var response = await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
+            return Results.Json(response);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        catch (ArgumentNullException)
+        {
+            return Results.BadRequest(new { error = "Missing 'deviceSerial'" });
+        }
     })
     .WithTags("SepidarGateway")
     .WithSummary("Register Sepidar device using configured credentials");
@@ -295,6 +315,17 @@ static string ResolveForwardPath(string requestPath, string? versionPrefix)
     return requestPath;
 }
 
+static IResult ServeStaticAsset(IWebHostEnvironment environment, string relativePath, string contentType)
+{
+    var file = environment.WebRootFileProvider.GetFileInfo(relativePath);
+    if (!file.Exists || string.IsNullOrEmpty(file.PhysicalPath))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(file.PhysicalPath, contentType);
+}
+
 static string BuildStoplightHtml()
 {
     return """
@@ -304,8 +335,8 @@ static string BuildStoplightHtml()
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sepidar Gateway Docs</title>
-    <link rel="stylesheet" href="/stoplight/styles.min.css" />
-    <script src="/stoplight/web-components.min.js"></script>
+    <link rel="stylesheet" href="/stoplight-elements.css" />
+    <script src="/stoplight-elements.js"></script>
     <style>
       body {
         margin: 0;

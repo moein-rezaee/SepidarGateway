@@ -10,7 +10,7 @@ namespace SepidarGateway.Services;
 
 public interface ISepidarGatewayService
 {
-    Task RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
+    Task<DeviceRegisterResponseDto> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
 
     Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
 
@@ -52,29 +52,54 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         _logger = logger;
     }
 
-    public async Task RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
+    public async Task<DeviceRegisterResponseDto> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
     {
-        var settings = GetSettings();
-        if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
+        if (request is null)
         {
-            settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
-            if (string.IsNullOrWhiteSpace(settings.Sepidar.IntegrationId))
-            {
-                settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
-            }
+            throw new ArgumentNullException(nameof(request));
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Sepidar.DeviceSerial))
+        var settings = GetSettings();
+
+        if (string.IsNullOrWhiteSpace(request.DeviceSerial))
         {
-            throw new InvalidOperationException("Device serial is not configured.");
+            throw new InvalidOperationException("Missing 'deviceSerial'");
         }
+
+        settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
+        settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
+        settings.Sepidar.RegisterPayloadMode = "IntegrationOnly";
 
         if (string.IsNullOrWhiteSpace(settings.Sepidar.IntegrationId))
         {
-            throw new InvalidOperationException("Integration ID is not configured.");
+            throw new InvalidOperationException("Unable to derive IntegrationID from deviceSerial");
         }
 
-        await _auth.EnsureDeviceRegisteredAsync(settings, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _auth.EnsureDeviceRegisteredAsync(settings, cancellationToken).ConfigureAwait(false);
+            return new DeviceRegisterResponseDto
+            {
+                Ok = true,
+                DeviceSerial = settings.Sepidar.DeviceSerial,
+                IntegrationId = settings.Sepidar.IntegrationId,
+                Rsa = new DeviceRegisterRsaDto
+                {
+                    RsaPublicKeyXml = settings.Crypto.RsaPublicKeyXml,
+                    RsaModulusBase64 = settings.Crypto.RsaModulusBase64,
+                    RsaExponentBase64 = settings.Crypto.RsaExponentBase64
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to register Sepidar device");
+            return new DeviceRegisterResponseDto
+            {
+                Ok = false,
+                Error = ex.Message
+            };
+        }
     }
 
     public async Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
@@ -132,6 +157,11 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         var digits = new string(serial.Where(char.IsDigit).ToArray());
+        if (digits.Length == 0)
+        {
+            return string.Empty;
+        }
+
         if (digits.Length >= 4)
         {
             return digits[..4];

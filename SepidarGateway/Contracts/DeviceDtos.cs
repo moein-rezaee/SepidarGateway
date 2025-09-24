@@ -7,6 +7,28 @@ public sealed class DeviceRegisterRequestDto
     public string DeviceSerial { get; set; } = string.Empty;
 }
 
+public sealed class DeviceRegisterResponseDto
+{
+    public bool Ok { get; set; }
+
+    public string? Error { get; set; }
+
+    public string? DeviceSerial { get; set; }
+
+    public string? IntegrationId { get; set; }
+
+    public DeviceRegisterRsaDto? Rsa { get; set; }
+}
+
+public sealed class DeviceRegisterRsaDto
+{
+    public string? RsaPublicKeyXml { get; set; }
+
+    public string? RsaModulusBase64 { get; set; }
+
+    public string? RsaExponentBase64 { get; set; }
+}
+
 public sealed class DeviceLoginRequestDto
 {
     public string? UserName { get; set; }
