@@ -5,13 +5,13 @@ namespace SepidarGateway.Auth;
 
 public interface ISepidarAuth
 {
-    Task EnsureDeviceRegisteredAsync(TenantOptions tenant, CancellationToken cancellationToken);
+    Task EnsureDeviceRegisteredAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
-    Task<DeviceLoginResponseDto> LoginAsync(TenantOptions tenant, CancellationToken cancellationToken);
+    Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
-    Task<string> EnsureTokenAsync(TenantOptions tenant, CancellationToken cancellationToken);
+    Task<string> EnsureTokenAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
-    Task<bool> IsAuthorizedAsync(TenantOptions tenant, CancellationToken cancellationToken);
+    Task<bool> IsAuthorizedAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
-    void InvalidateToken(string tenantId);
+    void InvalidateToken();
 }

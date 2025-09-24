@@ -4,31 +4,12 @@ using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using SepidarGateway.Configuration;
 using Swashbuckle.AspNetCore.SwaggerGen;
-using RouteConfig = SepidarGateway.Configuration.RouteOptions;
 
 namespace SepidarGateway.Swagger;
 
 public class GatewayRoutesDocumentFilter : IDocumentFilter
 {
     private static readonly Regex PathParameterRegex = new("\\{(?<name>[^}]+)\\}", RegexOptions.Compiled);
-
-    private static readonly OpenApiSecurityScheme TenantSecurityReference = new()
-    {
-        Reference = new OpenApiReference
-        {
-            Id = SwaggerConstants.TenantIdScheme,
-            Type = ReferenceType.SecurityScheme
-        }
-    };
-
-    private static readonly OpenApiSecurityScheme ApiKeySecurityReference = new()
-    {
-        Reference = new OpenApiReference
-        {
-            Id = SwaggerConstants.ApiKeyScheme,
-            Type = ReferenceType.SecurityScheme
-        }
-    };
 
     private readonly GatewayOptions _gatewayOptions;
 
@@ -37,69 +18,62 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         _gatewayOptions = options.Value;
     }
 
-    public void Apply(OpenApiDocument SwaggerDocument, DocumentFilterContext Context)
+    public void Apply(OpenApiDocument swaggerDocument, DocumentFilterContext context)
     {
-        _ = Context;
-        if (_gatewayOptions.Ocelot?.Routes == null || _gatewayOptions.Ocelot.Routes.Count == 0)
+        _ = context;
+        if (_gatewayOptions.Routes is null || _gatewayOptions.Routes.Count == 0)
         {
             return;
         }
 
-        SwaggerDocument.Paths ??= new OpenApiPaths();
-        var ExistingOperations = new HashSet<(string Path, OperationType Operation)>();
+        swaggerDocument.Paths ??= new OpenApiPaths();
+        var existingOperations = new HashSet<(string Path, OperationType Operation)>();
 
-        foreach (var RouteConfiguration in _gatewayOptions.Ocelot.Routes)
+        foreach (var route in _gatewayOptions.Routes)
         {
-            var NormalizedPath = NormalizePath(RouteConfiguration.UpstreamPathTemplate);
-            if (string.IsNullOrWhiteSpace(NormalizedPath))
+            var normalizedPath = NormalizePath(route.Path);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
             {
                 continue;
             }
 
-            // Hide low-level Sepidar auth/registration proxy routes from Swagger to avoid confusion;
-            // users should use simplified /device/* endpoints instead.
-            var down = (RouteConfiguration.DownstreamPathTemplate ?? string.Empty).Trim().ToLowerInvariant();
-            if (down.Contains("/api/devices/register") || down.Contains("/api/users/login"))
+            if (!swaggerDocument.Paths.TryGetValue(normalizedPath, out var pathItem))
             {
-                continue;
+                pathItem = new OpenApiPathItem();
+                swaggerDocument.Paths[normalizedPath] = pathItem;
             }
 
-            if (!SwaggerDocument.Paths.TryGetValue(NormalizedPath, out var PathItem))
-            {
-                PathItem = new OpenApiPathItem();
-                SwaggerDocument.Paths[NormalizedPath] = PathItem;
-            }
-
-            var RouteTag = DeriveTag(NormalizedPath);
-            var UpstreamMethods = RouteConfiguration.UpstreamHttpMethod?.Count > 0
-                ? RouteConfiguration.UpstreamHttpMethod
+            var tag = DeriveTag(normalizedPath);
+            var methods = route.Methods?.Count > 0
+                ? route.Methods
                 : new List<string> { "GET" };
 
-            foreach (var HttpMethodName in UpstreamMethods)
+            foreach (var method in methods)
             {
-                if (string.IsNullOrWhiteSpace(HttpMethodName) || !Enum.TryParse(HttpMethodName, true, out OperationType OperationTypeValue))
+                if (string.IsNullOrWhiteSpace(method) || !Enum.TryParse(method, true, out OperationType operationType))
                 {
                     continue;
                 }
 
-                if (!ExistingOperations.Add((NormalizedPath, OperationTypeValue)))
+                if (!existingOperations.Add((normalizedPath, operationType)))
                 {
                     continue;
                 }
 
-                var GatewayOperation = BuildOperation(RouteConfiguration, NormalizedPath, RouteTag);
-                PathItem.Operations[OperationTypeValue] = GatewayOperation;
+                var operation = BuildOperation(route, normalizedPath, tag);
+                pathItem.Operations[operationType] = operation;
             }
         }
     }
 
-    private OpenApiOperation BuildOperation(RouteConfig RouteConfiguration, string NormalizedPath, string RouteTag)
+    private OpenApiOperation BuildOperation(GatewayRoute route, string normalizedPath, string tag)
     {
-        var GatewayOperation = new OpenApiOperation
+        var methods = route.Methods?.Count > 0 ? route.Methods : new List<string> { "GET" };
+        var operation = new OpenApiOperation
         {
-            Summary = $"Proxy {string.Join(", ", RouteConfiguration.UpstreamHttpMethod ?? new List<string> { "GET" })} {NormalizedPath}",
-            Description = $"Forwards the request to Sepidar endpoint `{RouteConfiguration.DownstreamPathTemplate}`.",
-            Tags = new List<OpenApiTag> { new() { Name = RouteTag } },
+            Summary = $"Proxy {string.Join(", ", methods)} {normalizedPath}",
+            Description = "Forwards the request to the configured Sepidar endpoint while enriching headers and authentication.",
+            Tags = new List<OpenApiTag> { new() { Name = tag } },
             Responses = new OpenApiResponses
             {
                 ["200"] = new OpenApiResponse
@@ -108,29 +82,34 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 },
                 ["401"] = new OpenApiResponse
                 {
-                    Description = "Unauthorized - missing client credentials or Sepidar token expired."
+                    Description = "Unauthorized - Sepidar rejected the current token."
                 },
                 ["412"] = new OpenApiResponse
                 {
                     Description = "GenerationVersion mismatch reported by Sepidar."
                 }
+            },
+            Security = new List<OpenApiSecurityRequirement>
+            {
+                new()
+                {
+                    [new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference
+                        {
+                            Id = SwaggerConstants.SepidarTokenScheme,
+                            Type = ReferenceType.SecurityScheme
+                        }
+                    }] = Array.Empty<string>()
+                }
             }
         };
 
-        // In single-customer mode, X-Tenant-ID is not required. Keep only client API key if configured.
-        GatewayOperation.Security = new List<OpenApiSecurityRequirement>
+        foreach (var parameterName in ExtractPathParameters(normalizedPath))
         {
-            new()
+            operation.Parameters.Add(new OpenApiParameter
             {
-                [ApiKeySecurityReference] = Array.Empty<string>()
-            }
-        };
-
-        foreach (var ParameterName in ExtractPathParameters(NormalizedPath))
-        {
-            GatewayOperation.Parameters.Add(new OpenApiParameter
-            {
-                Name = ParameterName,
+                Name = parameterName,
                 In = ParameterLocation.Path,
                 Required = true,
                 Schema = new OpenApiSchema { Type = "string" },
@@ -138,13 +117,12 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             });
         }
 
-        // Attach request body schemas for known POST endpoints so Swagger "Try it out" works.
-        if ((RouteConfiguration.UpstreamHttpMethod?.Any(m => string.Equals(m, "POST", StringComparison.OrdinalIgnoreCase)) ?? false))
+        if (methods.Any(m => string.Equals(m, "POST", StringComparison.OrdinalIgnoreCase)))
         {
-            var pathLower = NormalizedPath.Trim('/').ToLowerInvariant();
-            if (pathLower.StartsWith("api/devices/register"))
+            var pathLower = normalizedPath.Trim('/').ToLowerInvariant();
+            if (pathLower.StartsWith("api/devices/register", StringComparison.OrdinalIgnoreCase))
             {
-                var mode = _gatewayOptions?.Tenant?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
+                var mode = _gatewayOptions.Settings?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
                 var schema = new OpenApiSchema
                 {
                     Type = "object",
@@ -162,7 +140,7 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                     schema.Properties["DeviceSerial"] = new OpenApiSchema { Type = "string" };
                 }
 
-                GatewayOperation.RequestBody = new OpenApiRequestBody
+                operation.RequestBody = new OpenApiRequestBody
                 {
                     Required = true,
                     Content = new Dictionary<string, OpenApiMediaType>
@@ -174,9 +152,9 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                     }
                 };
             }
-            else if (pathLower.StartsWith("api/users/login"))
+            else if (pathLower.StartsWith("api/users/login", StringComparison.OrdinalIgnoreCase))
             {
-                GatewayOperation.RequestBody = new OpenApiRequestBody
+                operation.RequestBody = new OpenApiRequestBody
                 {
                     Required = true,
                     Content = new Dictionary<string, OpenApiMediaType>
@@ -199,62 +177,43 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
             }
         }
 
-        return GatewayOperation;
+        return operation;
     }
 
-    private static string NormalizePath(string RoutePath)
+    private static string NormalizePath(string? path)
     {
-        if (string.IsNullOrWhiteSpace(RoutePath))
+        if (string.IsNullOrWhiteSpace(path))
         {
             return string.Empty;
         }
 
-        var TrimmedPath = RoutePath.Trim();
-        if (!TrimmedPath.StartsWith('/'))
+        var trimmed = path.Trim();
+        if (!trimmed.StartsWith('/'))
         {
-            TrimmedPath = "/" + TrimmedPath;
+            trimmed = "/" + trimmed;
         }
 
-        while (TrimmedPath.Contains("//", StringComparison.Ordinal))
-        {
-            TrimmedPath = TrimmedPath.Replace("//", "/", StringComparison.Ordinal);
-        }
-
-        return TrimmedPath;
+        return trimmed.TrimEnd('/');
     }
 
-    private static IEnumerable<string> ExtractPathParameters(string RoutePath)
+    private static string DeriveTag(string normalizedPath)
     {
-        var SeenParameters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match ParameterMatch in PathParameterRegex.Matches(RoutePath))
+        var segments = normalizedPath.Trim('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length > 0
+            ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(segments[0])
+            : "Gateway";
+    }
+
+    private static IEnumerable<string> ExtractPathParameters(string path)
+    {
+        foreach (Match match in PathParameterRegex.Matches(path))
         {
-            var ParameterName = ParameterMatch.Groups["name"].Value;
-            if (!string.IsNullOrWhiteSpace(ParameterName) && SeenParameters.Add(ParameterName))
+            var name = match.Groups["name"].Value;
+            if (!string.IsNullOrWhiteSpace(name))
             {
-                yield return ParameterName;
+                yield return name;
             }
         }
-    }
-
-    private static string DeriveTag(string RoutePath)
-    {
-        var PathSegments = RoutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var PathSegment in PathSegments)
-        {
-            if (!PathSegment.Equals("api", StringComparison.OrdinalIgnoreCase))
-            {
-                var name = PathSegment.Replace("{", string.Empty, StringComparison.Ordinal).Replace("}", string.Empty, StringComparison.Ordinal);
-                return ToPascalCase(name);
-            }
-        }
-
-        return "Api";
-    }
-
-    private static string ToPascalCase(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return value;
-        var parts = value.Split(new[] { '-', '_', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        return string.Concat(parts.Select(p => char.ToUpperInvariant(p[0]) + (p.Length > 1 ? p[1..] : string.Empty)));
     }
 }
