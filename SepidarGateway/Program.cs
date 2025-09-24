@@ -1,121 +1,62 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.Cors.Infrastructure;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
-using Ocelot.DependencyInjection;
-using Ocelot.Middleware;
+using SepidarGateway.Contracts;
 using SepidarGateway.Auth;
 using SepidarGateway.Configuration;
 using SepidarGateway.Crypto;
 using SepidarGateway.Handlers;
-using SepidarGateway.Middleware;
 using SepidarGateway.Observability;
 using SepidarGateway.Services;
 using SepidarGateway.Swagger;
 
-var AppBuilder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
-AppBuilder.Configuration
+builder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{AppBuilder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
-    .AddEnvironmentVariables()
-    .AddGatewayEnvironmentOverrides();
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
+    .AddEnvironmentVariables();
 
-AppBuilder.Services.AddOptions<GatewayOptions>()
-    .Bind(AppBuilder.Configuration.GetSection("Gateway"))
+builder.Services.AddOptions<GatewayOptions>()
+    .Bind(builder.Configuration.GetSection("Gateway"))
     .ValidateDataAnnotations();
 
-// Single-customer mode: no tenant resolver/context needed
-AppBuilder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
-AppBuilder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
-AppBuilder.Services.AddSingleton<SepidarHeaderHandler>();
-AppBuilder.Services.AddSingleton<ICorsPolicyProvider, TenantCorsPolicyProvider>();
-AppBuilder.Services.AddHostedService<TenantLifecycleHostedService>();
+builder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
+builder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
+builder.Services.AddSingleton<SepidarHeaderHandler>();
+builder.Services.AddSingleton<ISepidarGatewayService, SepidarGatewayService>();
 
-AppBuilder.Services.AddHttpContextAccessor();
-AppBuilder.Services.AddMemoryCache();
-AppBuilder.Services.AddHttpClient("SepidarAuth")
-    .ConfigureHttpMessageHandlerBuilder(builder =>
-    {
-        var options = builder.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
-        var tenant = options.CurrentValue.Tenant;
-        var sepidar = tenant?.Sepidar;
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-        };
+builder.Services.AddHttpContextAccessor();
 
-        var useProxy = sepidar?.UseProxy ?? true;
-        if (!useProxy)
-        {
-            handler.Proxy = null;
-            handler.UseProxy = false;
-        }
-        else
-        {
-            var proxyUrl = sepidar?.ProxyUrl;
-            if (!string.IsNullOrWhiteSpace(proxyUrl) && Uri.TryCreate(proxyUrl, UriKind.Absolute, out var proxyUri))
-            {
-                var proxy = new WebProxy(proxyUri)
-                {
-                    BypassProxyOnLocal = false
-                };
+builder.Services.AddHttpClient("SepidarAuth")
+    .ConfigurePrimaryHttpMessageHandler(CreateSepidarHandler);
 
-                var proxyUser = sepidar?.ProxyUserName;
-                var proxyPassword = sepidar?.ProxyPassword;
-                if (!string.IsNullOrWhiteSpace(proxyUser))
-                {
-                    proxy.Credentials = new NetworkCredential(proxyUser, proxyPassword);
-                }
+builder.Services.AddHttpClient(SepidarGatewayService.ProxyClientName)
+    .ConfigurePrimaryHttpMessageHandler(CreateSepidarHandler)
+    .AddHttpMessageHandler<SepidarHeaderHandler>();
 
-                handler.Proxy = proxy;
-                handler.UseProxy = true;
-            }
-            else
-            {
-                handler.Proxy = WebRequest.DefaultWebProxy;
-                handler.UseProxy = handler.Proxy is not null;
-            }
-        }
-
-        builder.PrimaryHandler = handler;
-    });
-
-AppBuilder.Services.AddCors(cors_options =>
+builder.Services.AddCors(options =>
 {
-    cors_options.AddPolicy("TenantPolicy", cors_policy => cors_policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+    options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 });
 
-AppBuilder.Services.AddHealthChecks();
-
-AppBuilder.Services.AddEndpointsApiExplorer();
-AppBuilder.Services.AddSwaggerGen(swagger_options =>
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(swagger =>
 {
-    swagger_options.SwaggerDoc(SwaggerConstants.DocumentName, new OpenApiInfo
+    swagger.SwaggerDoc(SwaggerConstants.DocumentName, new OpenApiInfo
     {
         Title = "Sepidar Gateway",
         Version = "v1",
-        Description = "Gateway-as-a-device facade for Sepidar E-Commerce Web Service."
+        Description = "Clean reverse proxy facade for Sepidar E-Commerce Web Service."
     });
 
-    swagger_options.DocumentFilter<GatewayRoutesDocumentFilter>();
+    swagger.DocumentFilter<GatewayRoutesDocumentFilter>();
 
-    // Single-customer mode: no tenant id header needed
+    swagger.ResolveConflictingActions(descriptions => descriptions.First());
 
-    swagger_options.AddSecurityDefinition(SwaggerConstants.ApiKeyScheme, new OpenApiSecurityScheme
-    {
-        Description = "Client API key required when the tenant enables API-key authentication.",
-        In = ParameterLocation.Header,
-        Name = "X-API-Key",
-        Type = SecuritySchemeType.ApiKey
-    });
-
-    // Optional manual Sepidar token override for Swagger (gateway will add Bearer automatically when not provided)
-    swagger_options.AddSecurityDefinition("SepidarToken", new OpenApiSecurityScheme
+    swagger.AddSecurityDefinition("SepidarToken", new OpenApiSecurityScheme
     {
         Description = "Optional Sepidar token override (without 'Bearer').",
         In = ParameterLocation.Header,
@@ -124,637 +65,243 @@ AppBuilder.Services.AddSwaggerGen(swagger_options =>
     });
 });
 
-AppBuilder.Services.AddRateLimiter(rate_options =>
+var app = builder.Build();
+
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseCors();
+app.UseSwagger();
+app.UseStaticFiles();
+app.UseSwaggerUI(options =>
 {
-    rate_options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    rate_options.OnRejected = (rate_context, cancellation_token) =>
+    options.SwaggerEndpoint($"/swagger/{SwaggerConstants.DocumentName}/swagger.json", "Sepidar Gateway");
+    options.RoutePrefix = "swagger";
+    options.DisplayRequestDuration();
+});
+
+var optionsMonitor = app.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
+var gatewayOptions = optionsMonitor.CurrentValue;
+var configuredVersions = (gatewayOptions.Settings.SupportedVersions ?? Array.Empty<string>())
+    .Select(version => version?.Trim('/') ?? string.Empty)
+    .Where(version => !string.IsNullOrWhiteSpace(version))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
+
+if (configuredVersions.Length == 0)
+{
+    configuredVersions = new[] { string.Empty };
+}
+
+foreach (var version in configuredVersions)
+{
+    var prefix = string.IsNullOrEmpty(version) ? string.Empty : "/" + version;
+    MapHealthEndpoints(app, prefix);
+    MapDeviceEndpoints(app, prefix);
+    MapProxyRoutes(app, gatewayOptions.Routes, prefix);
+}
+
+app.MapGet("/", () => Results.Redirect("/swagger"));
+
+app.Run();
+
+static HttpMessageHandler CreateSepidarHandler(IServiceProvider services)
+{
+    var options = services.GetRequiredService<IOptionsMonitor<GatewayOptions>>().CurrentValue.Settings;
+    var handler = new SocketsHttpHandler
     {
-        rate_context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        return new ValueTask(rate_context.HttpContext.Response.WriteAsync("Too many requests", cancellation_token));
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
     };
 
-    rate_options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+    if (options?.Sepidar.UseProxy != true)
     {
-        var tenant = httpContext.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<GatewayOptions>>().CurrentValue.Tenant;
-        var TenantLimits = tenant?.Limits ?? new TenantLimitOptions();
-        var PartitionKey = tenant?.TenantId ?? "default";
-        var TokenPermits = Math.Max(1, TenantLimits.RequestsPerMinute);
-        return RateLimitPartition.GetTokenBucketLimiter(PartitionKey, _ => new TokenBucketRateLimiterOptions
+        handler.Proxy = null;
+        handler.UseProxy = false;
+        return handler;
+    }
+
+    var proxyUrl = options?.Sepidar.ProxyUrl;
+    if (!string.IsNullOrWhiteSpace(proxyUrl) && Uri.TryCreate(proxyUrl, UriKind.Absolute, out var proxyUri))
+    {
+        var proxy = new WebProxy(proxyUri)
         {
-            TokenLimit = TokenPermits,
-            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-            QueueLimit = Math.Max(0, TenantLimits.QueueLimit),
-            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
-            TokensPerPeriod = TokenPermits,
-            AutoReplenishment = true
-        });
-    });
-});
+            BypassProxyOnLocal = false
+        };
 
-// Ensure Ocelot reads routes from root "Routes" by copying from "Ocelot:Routes" if needed
-EnsureOcelotRoutes(AppBuilder.Configuration);
-
-AppBuilder.Services.AddOcelot(AppBuilder.Configuration)
-    .AddDelegatingHandler<SepidarHeaderHandler>(true);
-
-var GatewayApp = AppBuilder.Build();
-
-GatewayApp.UseMiddleware<CorrelationIdMiddleware>();
-GatewayApp.UseMiddleware<ClientAuthorizationMiddleware>();
-GatewayApp.UseCors("TenantPolicy");
-GatewayApp.UseRateLimiter();
-
-GatewayApp.Use(async (context, next) =>
-{
-    var RequestPath = context.Request.Path.Value ?? string.Empty;
-
-    if (RequestPath.Equals("/health/live", StringComparison.OrdinalIgnoreCase))
-    {
-        await context.Response.WriteAsJsonAsync(new { status = "Live" }).ConfigureAwait(false);
-        return;
-    }
-
-    if (RequestPath.Equals("/health/ready", StringComparison.OrdinalIgnoreCase))
-    {
-        await context.Response.WriteAsJsonAsync(new { status = "Ready" }).ConfigureAwait(false);
-        return;
-    }
-
-    if (RequestPath.Equals("/", StringComparison.Ordinal))
-    {
-        context.Response.Redirect("/swagger/", permanent: false);
-        return;
-    }
-
-    if (RequestPath.Equals("/swagger", StringComparison.OrdinalIgnoreCase))
-    {
-        context.Response.Redirect("/swagger/", permanent: false);
-        return;
-    }
-
-    if (!RequestPath.StartsWith("/swagger", StringComparison.Ordinal) &&
-        RequestPath.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
-    {
-        var Suffix = RequestPath.Length > "/swagger".Length
-            ? RequestPath["/swagger".Length..]
-            : string.Empty;
-        var RedirectTarget = string.IsNullOrEmpty(Suffix) ? "/swagger/" : "/swagger" + Suffix;
-
-        context.Response.Redirect(RedirectTarget, permanent: false);
-        return;
-    }
-
-    await next().ConfigureAwait(false);
-});
-
-GatewayApp.UseSwagger();
-GatewayApp.UseSwaggerUI(swaggerUiOptions =>
-{
-    swaggerUiOptions.RoutePrefix = "swagger";
-    swaggerUiOptions.DocumentTitle = "Sepidar Gateway";
-    swaggerUiOptions.SwaggerEndpoint("/swagger/sepidar/swagger.json", "Sepidar Gateway v1");
-    swaggerUiOptions.DisplayRequestDuration();
-    swaggerUiOptions.EnableTryItOutByDefault();
-});
-
-// Diagnostics: Auth/Registration status per tenant
-GatewayApp.MapGet("/health/auth", async (IServiceProvider sp, CancellationToken ct) =>
-{
-    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions>>().CurrentValue;
-    var auth = sp.GetRequiredService<SepidarGateway.Auth.ISepidarAuth>();
-    var tenant = options.Tenant;
-    var entry = new Dictionary<string, object?>
-    {
-        ["TenantId"] = tenant.TenantId
-    };
-    try
-    {
-        await auth.EnsureDeviceRegisteredAsync(tenant, ct);
-        entry["Registered"] = true;
-    }
-    catch (Exception ex)
-    {
-        entry["Registered"] = false;
-        entry["RegisterError"] = ex.Message;
-    }
-
-    try
-    {
-        var token = await auth.EnsureTokenAsync(tenant, ct);
-        entry["Token"] = string.IsNullOrWhiteSpace(token) ? null : $"{token[..Math.Min(10, token.Length)]}...";
-    }
-    catch (Exception ex)
-    {
-        entry["Token"] = null;
-        entry["LoginError"] = ex.Message;
-    }
-
-    return Results.Json(entry);
-});
-
-// Admin endpoints for runtime crypto injection when device already registered
-var adminGroup = GatewayApp.MapGroup("/admin");
-
-adminGroup.MapGet("/tenant", (HttpContext http, Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    var t = opt.CurrentValue.Tenant;
-    var res = new
-    {
-        t.TenantId,
-        HasRsa = !string.IsNullOrWhiteSpace(t.Crypto.RsaPublicKeyXml) ||
-                 (!string.IsNullOrWhiteSpace(t.Crypto.RsaModulusBase64) && !string.IsNullOrWhiteSpace(t.Crypto.RsaExponentBase64))
-    };
-    return Results.Json(res);
-});
-
-// Public, simple endpoints: accept minimal input and do all heavy-lifting in background
-var deviceGroup = GatewayApp.MapGroup("/device").WithTags("Device");
-
-// Register by only providing deviceSerial (other fields optional). No admin key required.
-deviceGroup.MapPost("/register", async (
-    SepidarGateway.Contracts.DeviceRegisterRequestDto req,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
-{
-    if (req is null || string.IsNullOrWhiteSpace(req.DeviceSerial))
-    {
-        return Results.BadRequest(new { error = "Missing 'deviceSerial'" });
-    }
-
-    var tenant = opt.CurrentValue.Tenant;
-    tenant.Sepidar.DeviceSerial = req.DeviceSerial.Trim();
-    tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
-    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId))
-    {
-        return Results.BadRequest(new { error = "Unable to derive IntegrationID from deviceSerial" });
-    }
-    tenant.Sepidar.RegisterPayloadMode = "IntegrationOnly";
-
-    try
-    {
-        await auth.EnsureDeviceRegisteredAsync(tenant, ct);
-        return Results.Json(new
+        if (!string.IsNullOrWhiteSpace(options?.Sepidar.ProxyUserName))
         {
-            ok = true,
-            deviceSerial = tenant.Sepidar.DeviceSerial,
-            integrationId = tenant.Sepidar.IntegrationId,
-            rsa = new
-            {
-                tenant.Crypto.RsaPublicKeyXml,
-                tenant.Crypto.RsaModulusBase64,
-                tenant.Crypto.RsaExponentBase64
-            }
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message });
-    }
-});
+            proxy.Credentials = new NetworkCredential(options!.Sepidar.ProxyUserName, options.Sepidar.ProxyPassword);
+        }
 
-// Login by providing only username/password; gateway does MD5 and RSA headers itself
-deviceGroup.MapPost("/login", async (
-    SepidarGateway.Contracts.DeviceLoginRequestDto req,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
-{
-    var tenant = opt.CurrentValue.Tenant;
-    if (!string.IsNullOrWhiteSpace(req?.UserName)) tenant.Credentials.UserName = req!.UserName!.Trim();
-    if (!string.IsNullOrWhiteSpace(req?.Password)) tenant.Credentials.Password = req!.Password!.Trim();
-
-    try
-    {
-        var login = await auth.LoginAsync(tenant, ct);
-        return Results.Json(new { ok = true, token = login.Token, login });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message });
-    }
-});
-
-adminGroup.MapPost("/tenant/crypto", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    var body = await System.Text.Json.JsonSerializer.DeserializeAsync<Dictionary<string, string?>>(http.Request.Body, cancellationToken: ct) ?? new();
-    var tenant = opt.CurrentValue.Tenant;
-
-    if (body.TryGetValue("RsaPublicKeyXml", out var xml) && !string.IsNullOrWhiteSpace(xml))
-    {
-        tenant.Crypto.RsaPublicKeyXml = xml;
-        tenant.Crypto.RsaModulusBase64 = null;
-        tenant.Crypto.RsaExponentBase64 = null;
-    }
-    else if (body.TryGetValue("RsaModulusBase64", out var mod) && !string.IsNullOrWhiteSpace(mod) &&
-             body.TryGetValue("RsaExponentBase64", out var exp) && !string.IsNullOrWhiteSpace(exp))
-    {
-        tenant.Crypto.RsaPublicKeyXml = null;
-        tenant.Crypto.RsaModulusBase64 = mod;
-        tenant.Crypto.RsaExponentBase64 = exp;
+        handler.Proxy = proxy;
+        handler.UseProxy = true;
     }
     else
     {
-        return Results.BadRequest(new { error = "Provide RsaPublicKeyXml or both RsaModulusBase64 and RsaExponentBase64" });
+        handler.Proxy = WebRequest.DefaultWebProxy;
+        handler.UseProxy = handler.Proxy is not null;
     }
 
-    try
-    {
-        await auth.EnsureDeviceRegisteredAsync(tenant, ct);
-        var token = await auth.EnsureTokenAsync(tenant, ct);
-        return Results.Json(new { ok = true, tokenPreview = string.IsNullOrWhiteSpace(token) ? null : token[..Math.Min(10, token.Length)] + "..." });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message });
-    }
-});
+    return handler;
+}
 
-// Register device end-to-end using current or provided settings
-adminGroup.MapPost("/register/auto", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
+static void MapHealthEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 {
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = await reader.ReadToEndAsync(ct);
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
+    var prefix = string.IsNullOrEmpty(versionPrefix) ? string.Empty : versionPrefix!.TrimEnd('/');
+    var group = app.MapGroup($"{prefix}/Health");
 
-    var tenant = opt.CurrentValue.Tenant;
-    if (body.TryGetValue("deviceSerial", out var ds) && !string.IsNullOrWhiteSpace(ds)) tenant.Sepidar.DeviceSerial = ds.Trim();
-    if (body.TryGetValue("integrationId", out var iid) && !string.IsNullOrWhiteSpace(iid)) tenant.Sepidar.IntegrationId = iid.Trim();
-    if (string.IsNullOrWhiteSpace(tenant.Sepidar.IntegrationId) && !string.IsNullOrWhiteSpace(tenant.Sepidar.DeviceSerial)) tenant.Sepidar.IntegrationId = DeriveIntegrationId(tenant.Sepidar.DeviceSerial);
-    if (body.TryGetValue("baseUrl", out var bu) && !string.IsNullOrWhiteSpace(bu)) tenant.Sepidar.BaseUrl = bu.Trim();
-    if (body.TryGetValue("generationVersion", out var gv) && !string.IsNullOrWhiteSpace(gv)) tenant.Sepidar.GenerationVersion = gv.Trim();
-    if (body.TryGetValue("apiVersion", out var av) && !string.IsNullOrWhiteSpace(av)) tenant.Sepidar.ApiVersion = av.Trim();
-    if (body.TryGetValue("registerPayloadMode", out var rpm) && !string.IsNullOrWhiteSpace(rpm)) tenant.Sepidar.RegisterPayloadMode = rpm.Trim();
+    group.MapGet("/Live", () => Results.Json(new { Status = "Live" }))
+        .WithTags("Health")
+        .WithSummary("Liveness probe for the gateway host");
 
-    try
-    {
-        await auth.EnsureDeviceRegisteredAsync(tenant, ct);
-        return Results.Json(new
+    group.MapGet("/Ready", async (ISepidarGatewayService service, CancellationToken ct) =>
         {
-            ok = true,
-            tenant = tenant.TenantId,
-            deviceSerial = tenant.Sepidar.DeviceSerial,
-            integrationId = tenant.Sepidar.IntegrationId,
-            rsa = new
-            {
-                tenant.Crypto.RsaPublicKeyXml,
-                tenant.Crypto.RsaModulusBase64,
-                tenant.Crypto.RsaExponentBase64
-            }
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message });
-    }
-});
+            var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { Status = authorized ? "Ready" : "Degraded", Authorized = authorized });
+        })
+        .WithTags("Health")
+        .WithSummary("Readiness probe validating Sepidar authorization");
+}
 
-// Login and return token; username/password optional (plain). If omitted, uses configured credentials.
-adminGroup.MapPost("/login/auto", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
+static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 {
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = await reader.ReadToEndAsync(ct);
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
+    var prefix = string.IsNullOrEmpty(versionPrefix) ? string.Empty : versionPrefix!.TrimEnd('/');
+    var group = app.MapGroup($"{prefix}/Device");
 
-    var tenant = opt.CurrentValue.Tenant;
-    var clone = System.Text.Json.JsonSerializer.Deserialize<SepidarGateway.Configuration.TenantOptions>(
-        System.Text.Json.JsonSerializer.Serialize(tenant))!;
-    if (body.TryGetValue("userName", out var u) && !string.IsNullOrWhiteSpace(u)) clone.Credentials.UserName = u.Trim();
-    if (body.TryGetValue("password", out var p) && !string.IsNullOrWhiteSpace(p)) clone.Credentials.Password = p.Trim();
-
-    try
+    group.MapPost("/Register", async (DeviceRegisterRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
-        var login = await auth.LoginAsync(clone, ct);
-        return Results.Json(new { ok = true, token = login.Token, login });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message });
-    }
-});
-
-// Set register path at runtime (not persisted)
-adminGroup.MapPost("/tenant/register-path", (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = reader.ReadToEndAsync().GetAwaiter().GetResult();
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
-
-    if (!body.TryGetValue("path", out var path) || string.IsNullOrWhiteSpace(path))
-    {
-        return Results.BadRequest(new { error = "Missing 'path'" });
-    }
-    var tenant = opt.CurrentValue.Tenant;
-    tenant.Sepidar.RegisterPath = path.Trim();
-    return Results.Json(new { ok = true, tenant = tenant.TenantId, registerPath = tenant.Sepidar.RegisterPath });
-});
-
-// Try register against a provided path, copy RSA to active tenant on success
-adminGroup.MapPost("/register/test", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    SepidarGateway.Auth.ISepidarAuth auth,
-    CancellationToken ct) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = await reader.ReadToEndAsync(ct);
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
-
-    if (!body.TryGetValue("path", out var path) || string.IsNullOrWhiteSpace(path))
-    {
-        return Results.BadRequest(new { error = "Missing 'path'" });
-    }
-
-    var tenant = opt.CurrentValue.Tenant;
-    var clone = System.Text.Json.JsonSerializer.Deserialize<SepidarGateway.Configuration.TenantOptions>(
-        System.Text.Json.JsonSerializer.Serialize(tenant))!;
-    clone.Sepidar.RegisterPath = path.Trim();
-
-    try
-    {
-        await auth.EnsureDeviceRegisteredAsync(clone, ct);
-        // On success, copy RSA back
-        tenant.Crypto.RsaPublicKeyXml = clone.Crypto.RsaPublicKeyXml;
-        tenant.Crypto.RsaModulusBase64 = clone.Crypto.RsaModulusBase64;
-        tenant.Crypto.RsaExponentBase64 = clone.Crypto.RsaExponentBase64;
-        tenant.Sepidar.RegisterPath = clone.Sepidar.RegisterPath;
-        return Results.Json(new { ok = true, registerPath = tenant.Sepidar.RegisterPath, hasRsa = !string.IsNullOrWhiteSpace(tenant.Crypto.RsaPublicKeyXml) || (!string.IsNullOrWhiteSpace(tenant.Crypto.RsaModulusBase64) && !string.IsNullOrWhiteSpace(tenant.Crypto.RsaExponentBase64)) });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { ok = false, error = ex.Message, tried = clone.Sepidar.RegisterPath });
-    }
-});
-
-// Set base URL at runtime (not persisted)
-adminGroup.MapPost("/tenant/baseurl", (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = reader.ReadToEndAsync().GetAwaiter().GetResult();
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
-    if (!body.TryGetValue("url", out var url) || string.IsNullOrWhiteSpace(url))
-    {
-        return Results.BadRequest(new { error = "Missing 'url'" });
-    }
-    var tenant = opt.CurrentValue.Tenant;
-    tenant.Sepidar.BaseUrl = url.Trim();
-    return Results.Json(new { ok = true, baseUrl = tenant.Sepidar.BaseUrl });
-});
-
-// Update Sepidar settings at runtime (integrationId, deviceSerial, versions, paths)
-adminGroup.MapPost("/tenant/sepidar", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = await reader.ReadToEndAsync();
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, string?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bodyText) ?? new();
-    var t = opt.CurrentValue.Tenant;
-    if (body.TryGetValue("integrationId", out var integrationId) && !string.IsNullOrWhiteSpace(integrationId))
-        t.Sepidar.IntegrationId = integrationId.Trim();
-    if (body.TryGetValue("deviceSerial", out var deviceSerial) && !string.IsNullOrWhiteSpace(deviceSerial))
-        t.Sepidar.DeviceSerial = deviceSerial.Trim();
-    // Auto-derive IntegrationId from first 4 chars of DeviceSerial when not explicitly provided
-    if (string.IsNullOrWhiteSpace(t.Sepidar.IntegrationId) && !string.IsNullOrWhiteSpace(t.Sepidar.DeviceSerial))
-        t.Sepidar.IntegrationId = DeriveIntegrationId(t.Sepidar.DeviceSerial);
-    if (body.TryGetValue("generationVersion", out var gen) && !string.IsNullOrWhiteSpace(gen)) t.Sepidar.GenerationVersion = gen.Trim();
-    if (body.TryGetValue("apiVersion", out var api) && !string.IsNullOrWhiteSpace(api)) t.Sepidar.ApiVersion = api.Trim();
-    if (body.TryGetValue("registerPath", out var rp) && !string.IsNullOrWhiteSpace(rp)) t.Sepidar.RegisterPath = rp.Trim();
-    if (body.TryGetValue("loginPath", out var lp) && !string.IsNullOrWhiteSpace(lp)) t.Sepidar.LoginPath = lp.Trim();
-    if (body.TryGetValue("isAuthorizedPath", out var iap) && !string.IsNullOrWhiteSpace(iap)) t.Sepidar.IsAuthorizedPath = iap.Trim();
-    if (body.TryGetValue("registerPayloadMode", out var rpm) && !string.IsNullOrWhiteSpace(rpm)) t.Sepidar.RegisterPayloadMode = rpm.Trim();
-    if (body.TryGetValue("deviceTitle", out var dt) && !string.IsNullOrWhiteSpace(dt)) t.Sepidar.DeviceTitle = dt.Trim();
-    return Results.Json(new
-    {
-        ok = true,
-        t.TenantId,
-        t.Sepidar.BaseUrl,
-        t.Sepidar.IntegrationId,
-        t.Sepidar.DeviceSerial,
-        t.Sepidar.GenerationVersion,
-        t.Sepidar.ApiVersion,
-        t.Sepidar.RegisterPath,
-        t.Sepidar.LoginPath,
-        t.Sepidar.IsAuthorizedPath,
-        t.Sepidar.RegisterPayloadMode,
-        t.Sepidar.DeviceTitle
-    });
-});
-
-// Scan candidate register endpoints; returns status for each
-adminGroup.MapPost("/register/scan", async (
-    HttpContext http,
-    Microsoft.Extensions.Options.IOptionsMonitor<SepidarGateway.Configuration.GatewayOptions> opt,
-    IHttpClientFactory httpFactory,
-    CancellationToken ct) =>
-{
-    if (!IsAdminAuthorized(http)) return Results.StatusCode(StatusCodes.Status401Unauthorized);
-    using var reader = new StreamReader(http.Request.Body);
-    var bodyText = await reader.ReadToEndAsync(ct);
-    var body = string.IsNullOrWhiteSpace(bodyText)
-        ? new Dictionary<string, object?>()
-        : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(bodyText) ?? new();
-
-    var tenant = opt.CurrentValue.Tenant;
-    var baseUrl = tenant.Sepidar.BaseUrl.TrimEnd('/') + "/";
-    var hc = httpFactory.CreateClient("SepidarAuth");
-    var candidateList = new List<string>
-    {
-        "api/Devices/Register/",
-        "api/Device/Register/",
-        "api/Device/RegisterDevice/",
-        "api/Devices/RegisterDevice/",
-        "api/RegisterDevice/",
-        "api/Register/",
-        "api/Device/RegisterApp/",
-        "api/Devices/RegisterApp/",
-        "api/Device/RegisterECommerce/",
-        "api/Devices/RegisterECommerce/",
-        "api/Device/RegisterDeviceWithIntegration/",
-        "api/Devices/RegisterDeviceWithIntegration/"
-    };
-    if (body.TryGetValue("paths", out var pathsObj) && pathsObj is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.Array)
-    {
-        foreach (var el in je.EnumerateArray())
+        try
         {
-            if (el.ValueKind == System.Text.Json.JsonValueKind.String)
-            {
-                var p = el.GetString();
-                if (!string.IsNullOrWhiteSpace(p)) candidateList.Add(p!);
-            }
+            var response = await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
+            return Results.Content(response ?? string.Empty, "application/json");
         }
-    }
-
-    var results = new List<object>();
-    foreach (var raw in candidateList)
-    {
-        foreach (var variant in new[] { raw, raw.TrimEnd('/') })
+        catch (InvalidOperationException ex)
         {
-            var path = variant.TrimStart('/');
-            var uri = new Uri(new Uri(baseUrl, UriKind.Absolute), path);
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-            req.Headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
-            if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
-            {
-                req.Headers.TryAddWithoutValidation("api-version", tenant.Sepidar.ApiVersion);
-            }
-            try
-            {
-                using var resp = await hc.SendAsync(req, ct);
-                results.Add(new { path = path, status = (int)resp.StatusCode });
-            }
-            catch (Exception ex)
-            {
-                results.Add(new { path = path, error = ex.Message });
-            }
+            return Results.BadRequest(new { error = ex.Message });
         }
-    }
+        catch (ArgumentNullException)
+        {
+            return Results.BadRequest(new { error = "Missing 'deviceSerial'" });
+        }
+    })
+    .WithTags("SepidarGateway")
+    .WithSummary("Register Sepidar device using configured credentials");
 
-    return Results.Json(results);
-});
-
-// Only run Ocelot for API paths; let other endpoints (health, swagger) bypass Ocelot
-GatewayApp.MapWhen(
-    context => context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
-    branch =>
+    group.MapPost("/Login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
-        // Synchronously wait because MapWhen callback is not async
-        branch.UseOcelot().GetAwaiter().GetResult();
-    });
+        var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
+        return Results.Ok(response);
+    })
+    .WithTags("SepidarGateway")
+    .WithSummary("Login to Sepidar and return token details");
 
-await GatewayApp.RunAsync();
+    group.MapGet("/Authorize", async (ISepidarGatewayService service, CancellationToken ct) =>
+    {
+        var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
+        return Results.Ok(new { Authorized = authorized });
+    })
+    .WithTags("SepidarGateway")
+    .WithSummary("Check Sepidar authorization status");
+}
 
-static void EnsureOcelotRoutes(ConfigurationManager configuration)
+static void MapProxyRoutes(IEndpointRouteBuilder app, IReadOnlyCollection<GatewayRoute> routes, string? versionPrefix)
 {
-    var destRoutes = configuration.GetSection("Routes");
-    var srcRoutes = configuration.GetSection("Ocelot:Routes");
-    if (destRoutes.Exists())
+    if (routes is null || routes.Count == 0)
     {
-        // Still ensure placeholders on existing destination
-        var overridesExisting = new Dictionary<string, string?>();
-        var i = 0;
-        foreach (var r in destRoutes.GetChildren())
-        {
-            if (!r.GetSection("DownstreamHostAndPorts").Exists())
-            {
-                overridesExisting[$"Routes:{i}:DownstreamHostAndPorts:0:Host"] = "localhost";
-                overridesExisting[$"Routes:{i}:DownstreamHostAndPorts:0:Port"] = "80";
-            }
-            if (!r.GetSection("DownstreamScheme").Exists())
-            {
-                overridesExisting[$"Routes:{i}:DownstreamScheme"] = "http";
-            }
-            i++;
-        }
-        if (overridesExisting.Count > 0) configuration.AddInMemoryCollection(overridesExisting);
         return;
     }
 
-    if (!srcRoutes.Exists()) return;
-
-    var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-    var index = 0;
-    foreach (var child in srcRoutes.GetChildren())
+    foreach (var route in routes)
     {
-        CopySection(child, $"Routes:{index}", overrides);
-
-        // Ensure placeholders so Ocelot config is valid
-        if (!child.GetSection("DownstreamHostAndPorts").Exists())
+        if (string.IsNullOrWhiteSpace(route.Path))
         {
-            overrides[$"Routes:{index}:DownstreamHostAndPorts:0:Host"] = "localhost";
-            overrides[$"Routes:{index}:DownstreamHostAndPorts:0:Port"] = "80";
+            continue;
         }
-        if (!child.GetSection("DownstreamScheme").Exists())
+
+        var methods = route.Methods?.Count > 0
+            ? route.Methods
+            : new List<string> { HttpMethod.Get.Method };
+
+        var normalized = NormalizePath(route.Path);
+        var basePattern = CombinePrefix(versionPrefix, normalized);
+        var catchAllPattern = basePattern.EndsWith("/") ? basePattern + "{**catchAll}" : basePattern + "/{**catchAll}";
+
+        foreach (var method in methods)
         {
-            overrides[$"Routes:{index}:DownstreamScheme"] = "http";
+            app.MapMethods(basePattern, new[] { method }, async (HttpContext context, ISepidarGatewayService service, CancellationToken ct) =>
+            {
+                var forwardPath = ResolveForwardPath(context.Request.Path.Value ?? string.Empty, versionPrefix);
+                await service.ProxyAsync(context, forwardPath, ct).ConfigureAwait(false);
+            })
+            .ExcludeFromDescription();
+
+            app.MapMethods(catchAllPattern, new[] { method }, async (HttpContext context, string catchAll, ISepidarGatewayService service, CancellationToken ct) =>
+            {
+                _ = catchAll;
+                var forwardPath = ResolveForwardPath(context.Request.Path.Value ?? string.Empty, versionPrefix);
+                await service.ProxyAsync(context, forwardPath, ct).ConfigureAwait(false);
+            })
+            .ExcludeFromDescription();
         }
-        index++;
-    }
-    if (overrides.Count > 0) configuration.AddInMemoryCollection(overrides);
-}
-
-static void CopySection(IConfigurationSection source, string destBase, Dictionary<string, string?> dict)
-{
-    var children = source.GetChildren();
-    if (!children.Any())
-    {
-        dict[destBase] = source.Value;
-        return;
-    }
-
-    foreach (var child in children)
-    {
-        var key = string.IsNullOrEmpty(child.Key) ? destBase : $"{destBase}:{child.Key}";
-        CopySection(child, key, dict);
     }
 }
 
-static bool IsAdminAuthorized(HttpContext ctx)
+static string NormalizePath(string path)
 {
-    var adminKey = Environment.GetEnvironmentVariable("GW_ADMIN_KEY") ?? Environment.GetEnvironmentVariable("GW_ADMINKEY");
-    if (string.IsNullOrEmpty(adminKey))
+    if (string.IsNullOrWhiteSpace(path))
     {
-        return true; // no key configured
+        return "/";
     }
-    return ctx.Request.Headers.TryGetValue("X-Admin-Key", out var provided) && string.Equals(provided.ToString(), adminKey, StringComparison.Ordinal);
+
+    var trimmed = path.Trim();
+    if (!trimmed.StartsWith('/'))
+    {
+        trimmed = "/" + trimmed;
+    }
+
+    return trimmed.TrimEnd('/');
 }
 
-static string DeriveIntegrationId(string serial)
+static string CombinePrefix(string? prefix, string path)
 {
-    if (string.IsNullOrWhiteSpace(serial))
+    var normalizedPrefix = string.IsNullOrEmpty(prefix) ? string.Empty : prefix!.TrimEnd('/');
+    if (string.IsNullOrEmpty(normalizedPrefix))
     {
-        return string.Empty;
+        return path;
     }
 
-    var digits = new string(serial.Where(char.IsDigit).ToArray());
-    if (digits.Length == 0)
+    if (path.Equals("/", StringComparison.Ordinal))
     {
-        return string.Empty;
+        return normalizedPrefix;
     }
 
-    if (digits.Length >= 4)
+    return normalizedPrefix + path;
+}
+
+static string ResolveForwardPath(string requestPath, string? versionPrefix)
+{
+    if (string.IsNullOrWhiteSpace(requestPath))
     {
-        return digits.Substring(0, 4);
+        return "/";
     }
 
-    return digits.PadRight(4, '0');
+    if (string.IsNullOrEmpty(versionPrefix))
+    {
+        return requestPath;
+    }
+
+    var prefix = versionPrefix.TrimEnd('/');
+    if (!prefix.StartsWith('/'))
+    {
+        prefix = "/" + prefix;
+    }
+
+    if (requestPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+    {
+        var trimmed = requestPath[prefix.Length..];
+        return string.IsNullOrEmpty(trimmed) ? "/" : trimmed;
+    }
+
+    return requestPath;
 }
 
 public partial class Program;
