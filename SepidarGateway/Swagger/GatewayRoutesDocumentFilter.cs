@@ -43,6 +43,8 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 swaggerDocument.Paths[normalizedPath] = pathItem;
             }
 
+            pathItem.Operations ??= new Dictionary<OperationType, OpenApiOperation>();
+
             var tag = DeriveTag(normalizedPath);
             var methods = route.Methods?.Count > 0
                 ? route.Methods
