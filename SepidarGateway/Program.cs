@@ -1,10 +1,9 @@
 using System.Net;
 using System.Net.Http;
-using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Options;
-using SepidarGateway.Contracts;
 using Microsoft.OpenApi.Models;
+using SepidarGateway.Contracts;
 using SepidarGateway.Auth;
 using SepidarGateway.Configuration;
 using SepidarGateway.Crypto;
@@ -71,44 +70,33 @@ var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
 app.UseSwagger();
-app.UseSwaggerUI(options =>
-{
-    options.SwaggerEndpoint("/swagger/sepidar/swagger.json", "Sepidar Gateway");
-    options.RoutePrefix = "swagger";
-    options.DocumentTitle = "Sepidar Gateway API";
-    options.DisplayRequestDuration();
-    options.EnableDeepLinking();
-});
-
-app.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
-app.MapGet("/health/ready", async (ISepidarGatewayService service, CancellationToken ct) =>
-{
-    var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
-    return Results.Json(new { status = authorized ? "Ready" : "Degraded", authorized });
-});
-
-MapDeviceEndpoints(app, null);
 
 var optionsMonitor = app.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
 var gatewayOptions = optionsMonitor.CurrentValue;
-if (gatewayOptions.Settings.SupportedVersions?.Length > 0)
-{
-    foreach (var version in gatewayOptions.Settings.SupportedVersions)
-    {
-        if (string.IsNullOrWhiteSpace(version))
-        {
-            continue;
-        }
+var configuredVersions = (gatewayOptions.Settings.SupportedVersions ?? Array.Empty<string>())
+    .Select(version => version?.Trim('/') ?? string.Empty)
+    .Where(version => !string.IsNullOrWhiteSpace(version))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
 
-        var prefix = "/" + version.Trim();
-        MapDeviceEndpoints(app, prefix);
-        MapProxyRoutes(app, gatewayOptions.Routes, prefix);
-    }
+if (configuredVersions.Length == 0)
+{
+    configuredVersions = new[] { string.Empty };
 }
 
-MapProxyRoutes(app, gatewayOptions.Routes, null);
+foreach (var version in configuredVersions)
+{
+    var prefix = string.IsNullOrEmpty(version) ? string.Empty : "/" + version;
+    MapHealthEndpoints(app, prefix);
+    MapDeviceEndpoints(app, prefix);
+    MapProxyRoutes(app, gatewayOptions.Routes, prefix);
+}
 
-app.MapGet("/", () => Results.Redirect("/swagger"));
+app.MapGet("/", () => Results.Redirect("/docs"));
+app.MapGet("/swagger", () => Results.Redirect("/docs"));
+app.MapGet("/swagger/", () => Results.Redirect("/docs"));
+app.MapGet("/docs", () => Results.Content(BuildStoplightHtml(), "text/html"))
+    .ExcludeFromDescription();
 
 app.Run();
 
@@ -153,30 +141,51 @@ static HttpMessageHandler CreateSepidarHandler(IServiceProvider services)
     return handler;
 }
 
+static void MapHealthEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
+{
+    var prefix = string.IsNullOrEmpty(versionPrefix) ? string.Empty : versionPrefix!.TrimEnd('/');
+    var group = app.MapGroup($"{prefix}/Health");
+
+    group.MapGet("/Live", () => Results.Json(new { Status = "Live" }))
+        .WithTags("Health")
+        .WithSummary("Liveness probe for the gateway host");
+
+    group.MapGet("/Ready", async (ISepidarGatewayService service, CancellationToken ct) =>
+        {
+            var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { Status = authorized ? "Ready" : "Degraded", Authorized = authorized });
+        })
+        .WithTags("Health")
+        .WithSummary("Readiness probe validating Sepidar authorization");
+}
+
 static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 {
     var prefix = string.IsNullOrEmpty(versionPrefix) ? string.Empty : versionPrefix!.TrimEnd('/');
-    var group = app.MapGroup($"{prefix}/device");
+    var group = app.MapGroup($"{prefix}/Device");
 
-    group.MapPost("/register", async (DeviceRegisterRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
+    group.MapPost("/Register", async (DeviceRegisterRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
         await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
-        return Results.Ok(new { ok = true });
+        return Results.Ok(new { Ok = true });
     })
+    .WithTags("SepidarGateway")
     .WithSummary("Register Sepidar device using configured credentials");
 
-    group.MapPost("/login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
+    group.MapPost("/Login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
         var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
         return Results.Ok(response);
     })
+    .WithTags("SepidarGateway")
     .WithSummary("Login to Sepidar and return token details");
 
-    group.MapGet("/authorize", async (ISepidarGatewayService service, CancellationToken ct) =>
+    group.MapGet("/Authorize", async (ISepidarGatewayService service, CancellationToken ct) =>
     {
         var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
-        return Results.Ok(new { authorized });
+        return Results.Ok(new { Authorized = authorized });
     })
+    .WithTags("SepidarGateway")
     .WithSummary("Check Sepidar authorization status");
 }
 
@@ -279,6 +288,42 @@ static string ResolveForwardPath(string requestPath, string? versionPrefix)
     }
 
     return requestPath;
+}
+
+static string BuildStoplightHtml()
+{
+    return """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sepidar Gateway Docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/@stoplight/elements/styles.min.css" />
+    <script src="https://unpkg.com/@stoplight/elements/web-components.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+        background-color: #0f172a;
+      }
+
+      elements-api {
+        min-height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <elements-api
+      api-description-url="/swagger/sepidar/swagger.json"
+      router="hash"
+      layout="sidebar"
+      try-it="true"
+      hide-download-button="false"
+    ></elements-api>
+  </body>
+</html>
+""";
 }
 
 public partial class Program;

@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
@@ -10,6 +13,7 @@ namespace SepidarGateway.Swagger;
 public class GatewayRoutesDocumentFilter : IDocumentFilter
 {
     private static readonly Regex PathParameterRegex = new("\\{(?<name>[^}]+)\\}", RegexOptions.Compiled);
+    private static readonly Regex VersionSegmentRegex = new("^v[0-9]+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly GatewayOptions _gatewayOptions;
 
@@ -29,6 +33,17 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
         swaggerDocument.Paths ??= new OpenApiPaths();
         var existingOperations = new HashSet<(string Path, OperationType Operation)>();
 
+        var versions = (_gatewayOptions.Settings?.SupportedVersions ?? Array.Empty<string>())
+            .Select(version => version?.Trim('/') ?? string.Empty)
+            .Where(version => !string.IsNullOrWhiteSpace(version))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (versions.Length == 0)
+        {
+            versions = new[] { string.Empty };
+        }
+
         foreach (var route in _gatewayOptions.Routes)
         {
             var normalizedPath = NormalizePath(route.Path);
@@ -37,33 +52,41 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 continue;
             }
 
-            if (!swaggerDocument.Paths.TryGetValue(normalizedPath, out var pathItem))
-            {
-                pathItem = new OpenApiPathItem();
-                swaggerDocument.Paths[normalizedPath] = pathItem;
-            }
-
-            pathItem.Operations ??= new Dictionary<OperationType, OpenApiOperation>();
-
-            var tag = DeriveTag(normalizedPath);
             var methods = route.Methods?.Count > 0
                 ? route.Methods
                 : new List<string> { "GET" };
 
-            foreach (var method in methods)
+            foreach (var version in versions)
             {
-                if (string.IsNullOrWhiteSpace(method) || !Enum.TryParse(method, true, out OperationType operationType))
+                var versionedPath = string.IsNullOrEmpty(version)
+                    ? normalizedPath
+                    : CombineVersion(version, normalizedPath);
+
+                if (!swaggerDocument.Paths.TryGetValue(versionedPath, out var pathItem))
                 {
-                    continue;
+                    pathItem = new OpenApiPathItem();
+                    swaggerDocument.Paths[versionedPath] = pathItem;
                 }
 
-                if (!existingOperations.Add((normalizedPath, operationType)))
-                {
-                    continue;
-                }
+                pathItem.Operations ??= new Dictionary<OperationType, OpenApiOperation>();
 
-                var operation = BuildOperation(route, normalizedPath, tag);
-                pathItem.Operations[operationType] = operation;
+                var tag = DeriveTag(versionedPath);
+
+                foreach (var method in methods)
+                {
+                    if (string.IsNullOrWhiteSpace(method) || !Enum.TryParse(method, true, out OperationType operationType))
+                    {
+                        continue;
+                    }
+
+                    if (!existingOperations.Add((versionedPath, operationType)))
+                    {
+                        continue;
+                    }
+
+                    var operation = BuildOperation(route, versionedPath, tag);
+                    pathItem.Operations[operationType] = operation;
+                }
             }
         }
     }
@@ -71,6 +94,14 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
     private OpenApiOperation BuildOperation(GatewayRoute route, string normalizedPath, string tag)
     {
         var methods = route.Methods?.Count > 0 ? route.Methods : new List<string> { "GET" };
+        var segments = normalizedPath.Trim('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+        if (segments.Count > 0 && VersionSegmentRegex.IsMatch(segments[0]))
+        {
+            segments.RemoveAt(0);
+        }
+
         var operation = new OpenApiOperation
         {
             Summary = $"Proxy {string.Join(", ", methods)} {normalizedPath}",
@@ -122,8 +153,8 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
 
         if (methods.Any(m => string.Equals(m, "POST", StringComparison.OrdinalIgnoreCase)))
         {
-            var pathLower = normalizedPath.Trim('/').ToLowerInvariant();
-            if (pathLower.StartsWith("api/devices/register", StringComparison.OrdinalIgnoreCase))
+            var lowerSegments = string.Join('/', segments).ToLowerInvariant();
+            if (lowerSegments.StartsWith("api/devices/register", StringComparison.Ordinal))
             {
                 var mode = _gatewayOptions.Settings?.Sepidar?.RegisterPayloadMode?.Trim() ?? "Detailed";
                 var schema = new OpenApiSchema
@@ -155,7 +186,7 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                     }
                 };
             }
-            else if (pathLower.StartsWith("api/users/login", StringComparison.OrdinalIgnoreCase))
+            else if (lowerSegments.StartsWith("api/users/login", StringComparison.Ordinal))
             {
                 operation.RequestBody = new OpenApiRequestBody
                 {
@@ -202,15 +233,35 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
     private static string DeriveTag(string normalizedPath)
     {
         var segments = normalizedPath.Trim('/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries);
-        return segments.Length > 0
-            ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(segments[0])
-            : "Gateway";
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+
+        if (segments.Count > 0 && VersionSegmentRegex.IsMatch(segments[0]))
+        {
+            segments.RemoveAt(0);
+        }
+
+        if (segments.Count == 0)
+        {
+            return "Gateway";
+        }
+
+        if (string.Equals(segments[0], "api", StringComparison.OrdinalIgnoreCase))
+        {
+            if (segments.Count == 1)
+            {
+                return "Sepidar Api";
+            }
+
+            return $"Sepidar {CultureInfo.InvariantCulture.TextInfo.ToTitleCase(segments[1])}";
+        }
+
+        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(segments[0]);
     }
 
-    private static IEnumerable<string> ExtractPathParameters(string path)
+    private static IEnumerable<string> ExtractPathParameters(string versionedPath)
     {
-        foreach (Match match in PathParameterRegex.Matches(path))
+        foreach (Match match in PathParameterRegex.Matches(versionedPath))
         {
             var name = match.Groups["name"].Value;
             if (!string.IsNullOrWhiteSpace(name))
@@ -218,5 +269,21 @@ public class GatewayRoutesDocumentFilter : IDocumentFilter
                 yield return name;
             }
         }
+    }
+
+    private static string CombineVersion(string version, string normalizedPath)
+    {
+        var trimmedVersion = version.Trim('/');
+        if (string.IsNullOrEmpty(trimmedVersion))
+        {
+            return normalizedPath;
+        }
+
+        if (!normalizedPath.StartsWith('/'))
+        {
+            return $"/{trimmedVersion}/{normalizedPath}";
+        }
+
+        return $"/{trimmedVersion}{normalizedPath}";
     }
 }
