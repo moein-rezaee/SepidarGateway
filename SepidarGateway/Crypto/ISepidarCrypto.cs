@@ -9,5 +9,5 @@ public interface ISepidarCrypto
 
     string DecryptRegisterPayload(string serialSeed, string cipherTextBase64, string ivBase64);
 
-    string EncryptArbitraryCode(string arbitraryCode, TenantCryptoOptions cryptoOptions);
+    string EncryptArbitraryCode(string arbitraryCode, CryptoOptions cryptoOptions);
 }

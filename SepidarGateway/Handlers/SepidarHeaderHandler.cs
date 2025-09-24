@@ -32,18 +32,18 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage Request, CancellationToken CancellationToken)
     {
-        var TenantOptions = _options.CurrentValue.Tenant;
-        if (TenantOptions is null)
+        var settings = _options.CurrentValue.Settings;
+        if (settings is null)
         {
-            throw new InvalidOperationException("Tenant context missing for downstream request");
+            throw new InvalidOperationException("Gateway settings are not configured");
         }
 
         string effectivePath = Request.RequestUri?.AbsolutePath.Trim('/').ToLowerInvariant() ?? string.Empty;
         if (Request.RequestUri is { } OriginalUri)
         {
-            var BaseUri = new Uri(TenantOptions.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+            var BaseUri = new Uri(settings.Sepidar.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
             var DownstreamUri = new Uri(BaseUri, OriginalUri.PathAndQuery.TrimStart('/'));
-            var registerPathNormUri = (TenantOptions.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
+            var registerPathNormUri = (settings.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
             var isRegister = !string.IsNullOrEmpty(registerPathNormUri) &&
                              (effectivePath.Equals(registerPathNormUri, StringComparison.OrdinalIgnoreCase) ||
                               effectivePath.StartsWith(registerPathNormUri + "/", StringComparison.OrdinalIgnoreCase))
@@ -51,7 +51,7 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
             var isLogin = effectivePath.Contains("/users/login", StringComparison.OrdinalIgnoreCase);
             var shouldAppendApiVersion = !(isRegister || isLogin);
             Request.RequestUri = shouldAppendApiVersion
-                ? AppendApiVersionQuery(DownstreamUri, TenantOptions.Sepidar.ApiVersion)
+                ? AppendApiVersionQuery(DownstreamUri, settings.Sepidar.ApiVersion)
                 : DownstreamUri;
         }
 
@@ -61,22 +61,22 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         Request.Headers.Remove("EncArbitraryCode");
         Request.Headers.Remove("api-version");
 
-        Request.Headers.TryAddWithoutValidation("GenerationVersion", TenantOptions.Sepidar.GenerationVersion);
-        Request.Headers.TryAddWithoutValidation("IntegrationID", TenantOptions.Sepidar.IntegrationId);
+        Request.Headers.TryAddWithoutValidation("GenerationVersion", settings.Sepidar.GenerationVersion);
+        Request.Headers.TryAddWithoutValidation("IntegrationID", settings.Sepidar.IntegrationId);
 
-        if (!string.IsNullOrWhiteSpace(TenantOptions.Sepidar.ApiVersion))
+        if (!string.IsNullOrWhiteSpace(settings.Sepidar.ApiVersion))
         {
-            Request.Headers.TryAddWithoutValidation("api-version", TenantOptions.Sepidar.ApiVersion);
+            Request.Headers.TryAddWithoutValidation("api-version", settings.Sepidar.ApiVersion);
         }
 
         var ArbitraryCode = Guid.NewGuid().ToString();
         // Only add ArbitraryCode headers if RSA is configured (post-registration)
-        var hasRsa = !string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaPublicKeyXml)
-                     || (!string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaModulusBase64)
-                         && !string.IsNullOrWhiteSpace(TenantOptions.Crypto.RsaExponentBase64));
+        var hasRsa = !string.IsNullOrWhiteSpace(settings.Crypto.RsaPublicKeyXml)
+                     || (!string.IsNullOrWhiteSpace(settings.Crypto.RsaModulusBase64)
+                         && !string.IsNullOrWhiteSpace(settings.Crypto.RsaExponentBase64));
         if (hasRsa)
         {
-            var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, TenantOptions.Crypto);
+            var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, settings.Crypto);
             Request.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
             Request.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
         }
@@ -87,7 +87,7 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
         }
 
         // Avoid token acquisition on registration endpoint to prevent recursion and allow first-time register
-        var registerPathNorm = (TenantOptions.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
+        var registerPathNorm = (settings.Sepidar.RegisterPath ?? string.Empty).Trim('/').ToLowerInvariant();
         var skipToken = !string.IsNullOrEmpty(registerPathNorm) &&
                         (effectivePath.Equals(registerPathNorm, StringComparison.OrdinalIgnoreCase) ||
                          effectivePath.StartsWith(registerPathNorm + "/", StringComparison.OrdinalIgnoreCase));
@@ -104,7 +104,7 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
                 }
                 else
                 {
-                    var JwtToken = await _auth.EnsureTokenAsync(TenantOptions, CancellationToken).ConfigureAwait(false);
+                    var JwtToken = await _auth.EnsureTokenAsync(settings, CancellationToken).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(JwtToken))
                     {
                         Request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtToken);
@@ -114,11 +114,11 @@ public sealed class SepidarHeaderHandler : DelegatingHandler
             catch (Exception ex)
             {
                 // Allow downstream to decide (may return 401). Avoid turning it into 500.
-                _logger.LogWarning(ex, "Proceeding without JWT for tenant {TenantId}", TenantOptions.TenantId);
+                _logger.LogWarning(ex, "Proceeding without JWT for gateway {Gateway}", settings.Name);
             }
         }
 
-        _logger.LogDebug("Forwarding request for tenant {TenantId} to {Uri}", TenantOptions.TenantId, Request.RequestUri);
+        _logger.LogDebug("Forwarding request for gateway {Gateway} to {Uri}", settings.Name, Request.RequestUri);
 
         var CorrelationId = _httpContextAccessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] as string;
         if (!string.IsNullOrWhiteSpace(CorrelationId))

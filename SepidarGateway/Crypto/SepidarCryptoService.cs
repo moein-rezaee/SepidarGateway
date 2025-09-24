@@ -53,7 +53,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
         return Encoding.UTF8.GetString(PlainBytes);
     }
 
-    public string EncryptArbitraryCode(string arbitraryCode, TenantCryptoOptions cryptoOptions)
+    public string EncryptArbitraryCode(string arbitraryCode, CryptoOptions cryptoOptions)
     {
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
@@ -91,7 +91,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
         return buffer;
     }
 
-    private static void ImportRsaParameters(RSA rsa, TenantCryptoOptions cryptoOptions)
+    private static void ImportRsaParameters(RSA rsa, CryptoOptions cryptoOptions)
     {
         if (!string.IsNullOrWhiteSpace(cryptoOptions.RsaPublicKeyXml))
         {
@@ -110,7 +110,7 @@ public sealed class SepidarCryptoService : ISepidarCrypto
             return;
         }
 
-        throw new InvalidOperationException("No RSA public key configured for tenant.");
+        throw new InvalidOperationException("No RSA public key configured for the gateway.");
     }
 }
 
