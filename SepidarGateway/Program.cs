@@ -71,14 +71,39 @@ var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
 app.UseSwagger();
-app.UseSwaggerUI(ui =>
-{
-    ui.RoutePrefix = "swagger";
-    ui.DocumentTitle = "Sepidar Gateway";
-    ui.SwaggerEndpoint("/swagger/sepidar/swagger.json", "Sepidar Gateway v1");
-    ui.DisplayRequestDuration();
-    ui.EnableTryItOutByDefault();
-});
+
+const string StoplightHtml = """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sepidar Gateway Docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/@stoplight/elements/styles.min.css" />
+    <script src="https://unpkg.com/@stoplight/elements/web-components.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+        background-color: #0f172a;
+      }
+
+      elements-api {
+        min-height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <elements-api
+      api-description-url="/swagger/sepidar/swagger.json"
+      router="hash"
+      layout="sidebar"
+      try-it="true"
+      hide-download-button="false"
+    ></elements-api>
+  </body>
+</html>
+""";
 
 app.MapGet("/health/live", () => Results.Json(new { status = "Live" }));
 app.MapGet("/health/ready", async (ISepidarGatewayService service, CancellationToken ct) =>
@@ -108,8 +133,12 @@ if (gatewayOptions.Settings.SupportedVersions?.Length > 0)
 
 MapProxyRoutes(app, gatewayOptions.Routes, null);
 
-app.MapGet("/", () => Results.Redirect("/swagger/"));
-app.MapGet("/swagger", () => Results.Redirect("/swagger/"));
+app.MapGet("/docs", () => Results.Content(StoplightHtml, "text/html"));
+app.MapGet("/docs/", () => Results.Content(StoplightHtml, "text/html"));
+
+app.MapGet("/", () => Results.Redirect("/docs"));
+app.MapGet("/swagger", () => Results.Redirect("/docs"));
+app.MapGet("/swagger/", () => Results.Redirect("/docs"));
 
 app.Run();
 
