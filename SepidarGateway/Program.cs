@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Extensions.Options;
 using SepidarGateway.Contracts;
 using Microsoft.OpenApi.Models;
@@ -53,6 +54,8 @@ builder.Services.AddSwaggerGen(swagger =>
     });
 
     swagger.DocumentFilter<GatewayRoutesDocumentFilter>();
+
+    swagger.ResolveConflictingActions(descriptions => descriptions.First());
 
     swagger.AddSecurityDefinition("SepidarToken", new OpenApiSecurityScheme
     {
@@ -206,14 +209,16 @@ static void MapProxyRoutes(IEndpointRouteBuilder app, IReadOnlyCollection<Gatewa
             {
                 var forwardPath = ResolveForwardPath(context.Request.Path.Value ?? string.Empty, versionPrefix);
                 await service.ProxyAsync(context, forwardPath, ct).ConfigureAwait(false);
-            });
+            })
+            .ExcludeFromDescription();
 
             app.MapMethods(catchAllPattern, new[] { method }, async (HttpContext context, string catchAll, ISepidarGatewayService service, CancellationToken ct) =>
             {
                 _ = catchAll;
                 var forwardPath = ResolveForwardPath(context.Request.Path.Value ?? string.Empty, versionPrefix);
                 await service.ProxyAsync(context, forwardPath, ct).ConfigureAwait(false);
-            });
+            })
+            .ExcludeFromDescription();
         }
     }
 }
