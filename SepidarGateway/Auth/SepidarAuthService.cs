@@ -246,6 +246,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
 
         var integrationIdValue = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
+        tenant.Sepidar.IntegrationId = integrationIdValue;
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
             DevicePayload = integrationIdValue;
@@ -566,13 +567,19 @@ public sealed class SepidarAuthService : ISepidarAuth
         tenant.Credentials.UserName = userName;
         tenant.Credentials.Password = password;
 
+        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(integrationId))
+        {
+            throw new InvalidOperationException("Integration ID is not configured.");
+        }
+
         var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: false);
 
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
         // هدر api-version برای Login ارسال نمی‌شود تا کاملاً مطابق کرل باشد
 
         LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
+        LoginRequest.Headers.Add("IntegrationID", integrationId);
         LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
         LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
@@ -784,7 +791,13 @@ public sealed class SepidarAuthService : ISepidarAuth
     private void PrepareHeaders(HttpRequestHeaders headers, GatewaySettings tenant, string token)
     {
         headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
+        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(integrationId))
+        {
+            throw new InvalidOperationException("Integration ID is not configured.");
+        }
+
+        headers.TryAddWithoutValidation("IntegrationID", integrationId);
 
         if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
         {
