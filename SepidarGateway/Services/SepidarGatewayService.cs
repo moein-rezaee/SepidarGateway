@@ -79,6 +79,11 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         {
             return await _auth.RegisterDeviceAsync(settings, cancellationToken).ConfigureAwait(false);
         }
+        catch (RegisterDeviceFailedException ex)
+        {
+            _logger.LogWarning(ex, "Sepidar register returned status {StatusCode} for device {DeviceSerial}", ex.Response.StatusCode, settings.Sepidar.DeviceSerial);
+            return ex.Response;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to register Sepidar device");

@@ -1,6 +1,8 @@
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using SepidarGateway.Contracts;
@@ -171,16 +173,18 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
         try
         {
             var response = await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
+            var statusCode = response.StatusCode == 0 ? StatusCodes.Status200OK : response.StatusCode;
+
             if (string.IsNullOrEmpty(response.Body))
             {
-                return Results.NoContent();
+                return Results.StatusCode(statusCode);
             }
 
             var contentType = string.IsNullOrWhiteSpace(response.ContentType)
                 ? "application/json"
                 : response.ContentType;
 
-            return Results.Content(response.Body, contentType);
+            return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
         }
         catch (InvalidOperationException ex)
         {
