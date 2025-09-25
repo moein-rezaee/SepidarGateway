@@ -116,43 +116,128 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         var settings = GetSettings();
         ApplyConfiguredValues(settings);
 
-        RegisterPayloadSnapshot? registerSnapshot;
-        string? cachedSerial = settings.Sepidar.DeviceSerial?.Trim();
+        var requestedDeviceSerial = string.IsNullOrWhiteSpace(request.DeviceSerial)
+            ? null
+            : request.DeviceSerial.Trim();
+        var requestedIntegrationId = string.IsNullOrWhiteSpace(request.IntegrationId)
+            ? null
+            : request.IntegrationId.Trim();
+        var requestedGenerationVersion = string.IsNullOrWhiteSpace(request.GenerationVersion)
+            ? null
+            : request.GenerationVersion.Trim();
+        var requestedUserName = string.IsNullOrWhiteSpace(request.UserName)
+            ? null
+            : request.UserName.Trim();
+        var requestedPassword = string.IsNullOrWhiteSpace(request.Password)
+            ? null
+            : request.Password.Trim();
 
-        if (_registerCache.TryGet(out var cachedEntry) && cachedEntry is not null)
+        if (!string.IsNullOrWhiteSpace(requestedIntegrationId))
         {
-            var cachedDeviceSerial = string.IsNullOrWhiteSpace(cachedEntry.DeviceSerial)
+            settings.Sepidar.IntegrationId = requestedIntegrationId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestedGenerationVersion))
+        {
+            settings.Sepidar.GenerationVersion = requestedGenerationVersion;
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestedUserName))
+        {
+            settings.Credentials.UserName = requestedUserName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestedPassword))
+        {
+            settings.Credentials.Password = requestedPassword;
+        }
+
+        string? effectiveSerial = requestedDeviceSerial;
+        RegisterPayloadSnapshot? registerSnapshot = null;
+        var registerOverride = request.RegisterPayload;
+        var registerOverrideApplied = false;
+
+        if (registerOverride is not null)
+        {
+            var overrideCypher = registerOverride.Cypher?.Trim();
+            var overrideIv = registerOverride.IV?.Trim();
+            var overrideDeviceTitle = string.IsNullOrWhiteSpace(registerOverride.DeviceTitle)
                 ? null
-                : cachedEntry.DeviceSerial.Trim();
-            if (!string.IsNullOrWhiteSpace(cachedDeviceSerial))
-            {
-                cachedSerial = cachedDeviceSerial;
-            }
+                : registerOverride.DeviceTitle.Trim();
 
-            if (!string.IsNullOrWhiteSpace(cachedEntry.DeviceTitle))
+            if (!string.IsNullOrWhiteSpace(overrideCypher) && !string.IsNullOrWhiteSpace(overrideIv))
             {
-                settings.Sepidar.DeviceTitle = cachedEntry.DeviceTitle;
-            }
+                registerSnapshot = new RegisterPayloadSnapshot
+                {
+                    Cypher = overrideCypher,
+                    IV = overrideIv,
+                    DeviceTitle = overrideDeviceTitle
+                };
 
-            registerSnapshot = new RegisterPayloadSnapshot
-            {
-                Cypher = cachedEntry.Cypher,
-                IV = cachedEntry.IV,
-                DeviceTitle = cachedEntry.DeviceTitle
-            };
+                registerOverrideApplied = true;
+
+                if (string.IsNullOrWhiteSpace(effectiveSerial))
+                {
+                    effectiveSerial = settings.Sepidar.DeviceSerial?.Trim();
+                }
+
+                if (string.IsNullOrWhiteSpace(effectiveSerial))
+                {
+                    throw new InvalidOperationException("Device serial is required when overriding register payload.");
+                }
+
+                settings.Sepidar.DeviceTitle = overrideDeviceTitle ?? settings.Sepidar.DeviceTitle;
+                settings.Sepidar.DeviceSerial = effectiveSerial.Trim();
+
+                var cacheEntry = new RegisterPayloadCacheEntry(
+                    settings.Sepidar.DeviceSerial,
+                    overrideCypher,
+                    overrideIv,
+                    overrideDeviceTitle);
+
+                _registerCache.Store(cacheEntry, RegisterCacheLifetime);
+            }
         }
-        else
+
+        if (!registerOverrideApplied)
         {
-            _logger.LogWarning("Register payload cache is empty before login for gateway {Gateway}", settings.Name);
-            throw new InvalidOperationException("Register payload cache is empty. Please register the device again before logging in.");
+            if (_registerCache.TryGet(out var cachedEntry) && cachedEntry is not null)
+            {
+                var cachedDeviceSerial = string.IsNullOrWhiteSpace(cachedEntry.DeviceSerial)
+                    ? null
+                    : cachedEntry.DeviceSerial.Trim();
+                if (!string.IsNullOrWhiteSpace(cachedDeviceSerial))
+                {
+                    effectiveSerial = string.IsNullOrWhiteSpace(effectiveSerial)
+                        ? cachedDeviceSerial
+                        : effectiveSerial;
+                }
+
+                if (!string.IsNullOrWhiteSpace(cachedEntry.DeviceTitle))
+                {
+                    settings.Sepidar.DeviceTitle = cachedEntry.DeviceTitle;
+                }
+
+                registerSnapshot = new RegisterPayloadSnapshot
+                {
+                    Cypher = cachedEntry.Cypher,
+                    IV = cachedEntry.IV,
+                    DeviceTitle = cachedEntry.DeviceTitle
+                };
+            }
+            else
+            {
+                _logger.LogWarning("Register payload cache is empty before login for gateway {Gateway}", settings.Name);
+                throw new InvalidOperationException("Register payload cache is empty. Please register the device again before logging in.");
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(cachedSerial))
+        if (string.IsNullOrWhiteSpace(effectiveSerial))
         {
             throw new InvalidOperationException("Device serial is not available. Please register the device again before logging in.");
         }
 
-        settings.Sepidar.DeviceSerial = cachedSerial.Trim();
+        settings.Sepidar.DeviceSerial = effectiveSerial.Trim();
 
         if (string.IsNullOrWhiteSpace(settings.Credentials.UserName))
         {
