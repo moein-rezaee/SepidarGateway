@@ -557,7 +557,27 @@ public sealed class SepidarAuthService : ISepidarAuth
     {
         _logger.LogInformation("Logging in gateway {Gateway}", tenant.Name);
         var HttpClient = CreateHttpClient(tenant);
-        var ArbitraryCode = Guid.NewGuid().ToString();
+        var generationVersion = (tenant.Sepidar.GenerationVersion ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(generationVersion))
+        {
+            throw new InvalidOperationException("Generation version is not configured.");
+        }
+
+        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(integrationId))
+        {
+            throw new InvalidOperationException("Integration ID is not configured.");
+        }
+
+        if (!integrationId.All(char.IsDigit))
+        {
+            throw new InvalidOperationException("Integration ID is not numeric.");
+        }
+
+        tenant.Sepidar.GenerationVersion = generationVersion;
+        tenant.Sepidar.IntegrationId = integrationId;
+
+        var ArbitraryCode = Guid.NewGuid().ToString("D").ToLowerInvariant();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
         // لاگین بدون api-version در Query بر اساس کرل موفق
@@ -577,21 +597,15 @@ public sealed class SepidarAuthService : ISepidarAuth
         tenant.Credentials.UserName = userName;
         tenant.Credentials.Password = password;
 
-        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
-        if (string.IsNullOrEmpty(integrationId))
-        {
-            throw new InvalidOperationException("Integration ID is not configured.");
-        }
-
         var LoginUri = BuildTenantUri(tenant, tenant.Sepidar.LoginPath, includeApiVersionQuery: false);
 
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
         // هدر api-version برای Login ارسال نمی‌شود تا کاملاً مطابق کرل باشد
 
-        LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        LoginRequest.Headers.Add("IntegrationID", integrationId);
-        LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
-        LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
+        LoginRequest.Headers.TryAddWithoutValidation("GenerationVersion", generationVersion);
+        LoginRequest.Headers.TryAddWithoutValidation("IntegrationID", integrationId);
+        LoginRequest.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
+        LoginRequest.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
 
         var PasswordHash = LooksLikeMd5(password)
             ? password.ToLowerInvariant()
