@@ -126,9 +126,13 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
         if (_registerCache.TryGet(out var cachedEntry) && cachedEntry is not null)
         {
-            cachedSerial = string.IsNullOrWhiteSpace(cachedEntry.DeviceSerial)
-                ? cachedSerial
+            var cachedDeviceSerial = string.IsNullOrWhiteSpace(cachedEntry.DeviceSerial)
+                ? null
                 : cachedEntry.DeviceSerial.Trim();
+            if (!string.IsNullOrWhiteSpace(cachedDeviceSerial))
+            {
+                cachedSerial = cachedDeviceSerial;
+            }
 
             if (!string.IsNullOrWhiteSpace(cachedEntry.DeviceTitle))
             {
@@ -148,15 +152,12 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             throw new InvalidOperationException("Register payload cache is empty. Please register the device again before logging in.");
         }
 
-        if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
+        if (string.IsNullOrWhiteSpace(cachedSerial))
         {
-            cachedSerial = request.DeviceSerial.Trim();
+            throw new InvalidOperationException("Device serial is not available. Please register the device again before logging in.");
         }
 
-        if (!string.IsNullOrWhiteSpace(cachedSerial))
-        {
-            settings.Sepidar.DeviceSerial = cachedSerial;
-        }
+        settings.Sepidar.DeviceSerial = cachedSerial.Trim();
 
         if (string.IsNullOrWhiteSpace(settings.Credentials.UserName))
         {
@@ -254,14 +255,8 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
     private string? ResolveConfigurationValue(string key, string? fallback, GatewaySettings settings)
     {
-        var value = _configuration[key];
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
-
         var envKey = key.Replace(":", "__", StringComparison.Ordinal);
-        value = Environment.GetEnvironmentVariable(envKey);
+        var value = Environment.GetEnvironmentVariable(envKey);
         if (!string.IsNullOrWhiteSpace(value))
         {
             return value;
@@ -285,6 +280,12 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
                     }
                 }
             }
+        }
+
+        value = _configuration[key];
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
         }
 
         return fallback;
@@ -338,7 +339,8 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
             if (string.IsNullOrWhiteSpace(deviceSerial))
             {
-                deviceSerial = FindStringValue(root, "deviceSerial")?.Trim();
+                _logger.LogWarning("Device serial is missing from settings when caching register payload for gateway {Gateway}", settings.Name);
+                return false;
             }
 
             if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
@@ -347,7 +349,7 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             }
 
             var entry = new RegisterPayloadCacheEntry(
-                deviceSerial ?? string.Empty,
+                deviceSerial,
                 cypher.Trim(),
                 iv.Trim(),
                 string.IsNullOrWhiteSpace(deviceTitle) ? null : deviceTitle.Trim());
