@@ -28,7 +28,6 @@ builder.Services.AddOptions<GatewayOptions>()
 builder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
 builder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
 builder.Services.AddSingleton<SepidarHeaderHandler>();
-builder.Services.AddSingleton<ILoginCache, InMemoryLoginCache>();
 builder.Services.AddSingleton<ISepidarGatewayService, SepidarGatewayService>();
 
 builder.Services.AddHttpContextAccessor();

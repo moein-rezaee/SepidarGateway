@@ -593,13 +593,24 @@ public sealed class SepidarAuthService : ISepidarAuth
             try
             {
                 using var document = JsonDocument.Parse(trimmed);
-                if (document.RootElement.TryGetProperty("message", out var messageElement) &&
-                    messageElement.ValueKind == JsonValueKind.String)
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
                 {
-                    var message = messageElement.GetString();
-                    if (!string.IsNullOrWhiteSpace(message))
+                    foreach (var property in document.RootElement.EnumerateObject())
                     {
-                        return message;
+                        if (!property.Name.Equals("message", StringComparison.OrdinalIgnoreCase) &&
+                            !property.Name.EndsWith("Message", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (property.Value.ValueKind == JsonValueKind.String)
+                        {
+                            var message = property.Value.GetString();
+                            if (!string.IsNullOrWhiteSpace(message))
+                            {
+                                return message;
+                            }
+                        }
                     }
                 }
 
