@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 
 namespace SepidarGateway.Contracts;
 
@@ -9,7 +10,10 @@ public sealed class DeviceRegisterRequestDto
 
 public sealed class DeviceLoginRequestDto
 {
+    [JsonPropertyName("userName")]
     public string? UserName { get; set; }
+
+    [JsonPropertyName("password")]
     public string? Password { get; set; }
 }
 

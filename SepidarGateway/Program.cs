@@ -28,6 +28,7 @@ builder.Services.AddOptions<GatewayOptions>()
 builder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
 builder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
 builder.Services.AddSingleton<SepidarHeaderHandler>();
+builder.Services.AddSingleton<ILoginCache, InMemoryLoginCache>();
 builder.Services.AddSingleton<ISepidarGatewayService, SepidarGatewayService>();
 
 builder.Services.AddHttpContextAccessor();
@@ -200,8 +201,15 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 
     group.MapPost("/Login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
     {
-        var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
-        return Results.Ok(response);
+        try
+        {
+            var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
+            return Results.Ok(response);
+        }
+        catch (AuthenticationFailedException ex)
+        {
+            return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status401Unauthorized);
+        }
     })
     .WithTags("SepidarGateway")
     .WithSummary("Login to Sepidar and return token details");

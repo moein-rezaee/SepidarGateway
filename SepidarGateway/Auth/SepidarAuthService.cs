@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -550,9 +551,16 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
-        if (LoginResponseMessage.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
+        if (LoginResponseMessage.StatusCode == HttpStatusCode.PreconditionFailed)
         {
             throw new InvalidOperationException("Generation version mismatch");
+        }
+
+        if (LoginResponseMessage.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            var errorBody = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var errorMessage = ExtractLoginErrorMessage(errorBody, LoginResponseMessage.StatusCode);
+            throw new AuthenticationFailedException(errorMessage);
         }
 
         LoginResponseMessage.EnsureSuccessStatusCode();
@@ -564,6 +572,53 @@ public sealed class SepidarAuthService : ISepidarAuth
         var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
         return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
+    }
+
+    private static string ExtractLoginErrorMessage(string? responseBody, HttpStatusCode statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return statusCode switch
+            {
+                HttpStatusCode.BadRequest => "Sepidar rejected the login request.",
+                HttpStatusCode.Forbidden => "The Sepidar user does not have permission to sign in.",
+                HttpStatusCode.Unauthorized => "Invalid Sepidar credentials.",
+                _ => "Sepidar login failed."
+            };
+        }
+
+        var trimmed = responseBody.Trim();
+        if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(trimmed);
+                if (document.RootElement.TryGetProperty("message", out var messageElement) &&
+                    messageElement.ValueKind == JsonValueKind.String)
+                {
+                    var message = messageElement.GetString();
+                    if (!string.IsNullOrWhiteSpace(message))
+                    {
+                        return message;
+                    }
+                }
+
+                if (document.RootElement.ValueKind == JsonValueKind.String)
+                {
+                    var rootMessage = document.RootElement.GetString();
+                    if (!string.IsNullOrWhiteSpace(rootMessage))
+                    {
+                        return rootMessage;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to plain text handling
+            }
+        }
+
+        return trimmed.Length > 512 ? trimmed[..512] : trimmed;
     }
 
     private HttpClient CreateHttpClient(GatewaySettings tenant)

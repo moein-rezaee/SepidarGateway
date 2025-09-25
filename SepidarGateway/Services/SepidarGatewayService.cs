@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using Microsoft.AspNetCore.Http;
@@ -39,17 +40,20 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
     private readonly ISepidarAuth _auth;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<SepidarGatewayService> _logger;
+    private readonly ILoginCache _loginCache;
 
     public SepidarGatewayService(
         IOptionsMonitor<GatewayOptions> optionsMonitor,
         ISepidarAuth auth,
         IHttpClientFactory httpClientFactory,
-        ILogger<SepidarGatewayService> logger)
+        ILogger<SepidarGatewayService> logger,
+        ILoginCache loginCache)
     {
         _optionsMonitor = optionsMonitor;
         _auth = auth;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _loginCache = loginCache;
     }
 
     public async Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
@@ -93,18 +97,52 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
     public async Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
     {
+        if (request is null)
+        {
+            throw new ArgumentNullException(nameof(request));
+        }
+
+        var userName = request.UserName?.Trim();
+        var password = request.Password?.Trim();
+
+        if (!string.IsNullOrWhiteSpace(userName) &&
+            !string.IsNullOrWhiteSpace(password) &&
+            _loginCache.TryGet(userName, password, out var cachedResponse) &&
+            cachedResponse is not null)
+        {
+            return cachedResponse;
+        }
+
         var settings = GetSettings();
-        if (!string.IsNullOrWhiteSpace(request.UserName))
+        if (!string.IsNullOrWhiteSpace(userName))
         {
-            settings.Credentials.UserName = request.UserName.Trim();
+            settings.Credentials.UserName = userName;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Password))
+        if (!string.IsNullOrWhiteSpace(password))
         {
-            settings.Credentials.Password = request.Password.Trim();
+            settings.Credentials.Password = password;
         }
 
-        return await _auth.LoginAsync(settings, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var response = await _auth.LoginAsync(settings, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(userName) && !string.IsNullOrWhiteSpace(password))
+            {
+                _loginCache.Set(userName, password, response);
+            }
+
+            return response;
+        }
+        catch (AuthenticationFailedException)
+        {
+            if (!string.IsNullOrWhiteSpace(userName) && !string.IsNullOrWhiteSpace(password))
+            {
+                _loginCache.Remove(userName, password);
+            }
+
+            throw;
+        }
     }
 
     public Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken)
