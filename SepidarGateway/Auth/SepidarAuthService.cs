@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -335,6 +336,26 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
+    private async Task RefreshRegistrationAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    {
+        var authState = _state;
+        var registerResponse = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+        authState.Registered = true;
+        authState.LastRegisterResponse = registerResponse;
+        TryApplyCachedRegistration(tenant);
+    }
+
+    private void ResetRegistrationState(GatewaySettings tenant)
+    {
+        var authState = _state;
+        authState.Registered = false;
+        authState.LastRegisterResponse = null;
+        authState.RegisterSnapshot = null;
+        tenant.Crypto.RsaPublicKeyXml = null;
+        tenant.Crypto.RsaModulusBase64 = null;
+        tenant.Crypto.RsaExponentBase64 = null;
+    }
+
     private static CryptoOptions CloneCryptoOptions(CryptoOptions source)
     {
         return new CryptoOptions
@@ -653,6 +674,11 @@ public sealed class SepidarAuthService : ISepidarAuth
 
     private async Task<LoginResult> LoginInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
+        return await LoginInternalAsync(tenant, allowRetry: true, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<LoginResult> LoginInternalAsync(GatewaySettings tenant, bool allowRetry, CancellationToken cancellationToken)
+    {
         _logger.LogInformation("Logging in gateway {Gateway}", tenant.Name);
         if (!TryApplyCachedRegistration(tenant) && !HasRsaConfigured(tenant.Crypto))
         {
@@ -714,6 +740,15 @@ public sealed class SepidarAuthService : ISepidarAuth
             var errorMessage = ParseSepidarErrorMessage(ResponseContent);
             var statusCode = LoginResponseMessage.StatusCode;
             _logger.LogWarning("Sepidar login failed for gateway {Gateway} with status {StatusCode}: {Message}", tenant.Name, (int)statusCode, errorMessage ?? ResponseContent);
+
+            if (allowRetry && IsApiKeyMismatchMessage(errorMessage))
+            {
+                _logger.LogWarning("API key mismatch detected for gateway {Gateway}. Refreshing registration and retrying login.", tenant.Name);
+                ResetRegistrationState(tenant);
+                await RefreshRegistrationAsync(tenant, cancellationToken).ConfigureAwait(false);
+                return await LoginInternalAsync(tenant, allowRetry: false, cancellationToken).ConfigureAwait(false);
+            }
+
             throw new SepidarAuthenticationException(statusCode, errorMessage ?? string.Empty, ResponseContent);
         }
 
@@ -1149,5 +1184,16 @@ public sealed class SepidarAuthService : ISepidarAuth
         return !string.IsNullOrWhiteSpace(crypto.RsaPublicKeyXml)
                || (!string.IsNullOrWhiteSpace(crypto.RsaModulusBase64) &&
                    !string.IsNullOrWhiteSpace(crypto.RsaExponentBase64));
+    }
+
+    private static bool IsApiKeyMismatchMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("عدم تطابق کلید", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("api key mismatch", StringComparison.OrdinalIgnoreCase);
     }
 }
