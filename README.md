@@ -38,13 +38,11 @@ All customer/tenant customization lives in configuration files or environment va
 - در صورتی که سرویس مشتری مسیرهای متفاوتی برای رجیستر/لاگین دارد، مقادیر `Sepidar.RegisterPath`، `Sepidar.RegisterFallbackPaths`، `Sepidar.LoginPath` و `Sepidar.IsAuthorizedPath` را در کانفیگ یا ENV تنظیم کنید؛ گیت‌وی به‌طور پیش‌فرض علاوه بر مسیر اصلی، نسخه‌های `api/Device/Register/`، `api/Device/RegisterDevice/`، `api/Devices/RegisterDevice/` و `api/RegisterDevice/` را نیز تست می‌کند و در صورت نیاز مسیرهای حاوی «register» را به‌صورت خودکار از Swagger سپیدار کشف خواهد کرد.
 - اگر سرویس مشتری نیاز به پارامتر یا هدر `api-version` دارد، مقدار `Sepidar.ApiVersion` را مشخص کنید تا علاوه بر هدر، پارامتر Query آن نیز روی تمام درخواست‌های ثبت‌نام، لاگین و فراخوانی‌های خروجی اضافه شود.
 
-### فایل‌های ENV به تفکیک محیط
+### فایل ENV
 
-- متغیرهای محیطی هر محیط در پوشهٔ [`env/`](env/) نگهداری می‌شوند. برای مثال `env/Production/gateway.env` برای تولید و `env/Development/gateway.env` برای توسعه است.
-- نام متغیرها کوتاه، UpperCase و تنها با یک آندرلاین بین هر بخش نوشته شده‌اند (فرمت `GW_T{index}_...` مانند `GW_T0_SEPIDAR_INTEGRATIONID`). این قالب توسط گیت‌وی به تنظیمات تودرتو نگاشت می‌شود.
-- فقط مقادیر حساس مثل `IntegrationId`، `DeviceSerial`، `UserName` و `Password` در این فایل‌ها قرار می‌گیرد. تنظیمات عمومی در `appsettings.{Environment}.json` قرار دارد.
-- برای مقادیر آرایه‌ای (مانند `Hostnames` یا `ApiKeys`) عناصر را با `;` از هم جدا کنید تا هر مورد به‌صورت مجزا بارگذاری شود.
-- برای محیط‌های جدید، یک فایل تازه در همان پوشه بسازید. `docker-compose.yml` به صورت خودکار براساس مقدار `ASPNETCORE_ENVIRONMENT` مسیر صحیح را بارگذاری می‌کند. در اجرای محلی بدون Docker نیز می‌توانید فایل مناسب را با `source env/<Environment>/gateway.env` بارگذاری کنید یا متغیرها را دستی `export` کنید.
+- تمام متغیرهای محیطی مورد نیاز گیت‌وی در فایل [`gateway.env`](gateway.env) قرار می‌گیرند.
+- این فایل فقط شامل مقادیر حساس مانند `SEPIDAR_GATEWAY_USERNAME` و `SEPIDAR_GATEWAY_PASSWORD` است؛ سایر تنظیمات در `appsettings.json` تعریف شده‌اند.
+- `docker-compose.yml` همین فایل را بارگذاری می‌کند و در اجرای محلی نیز می‌توانید با `source gateway.env` متغیرها را وارد محیط کنید یا آن‌ها را دستی `export` نمایید.
 
 ### Tenant configuration schema
 
@@ -112,7 +110,7 @@ All customer/tenant customization lives in configuration files or environment va
 ### گام‌های آماده‌سازی کانفیگ برای مشتری جدید
 
 1. فایل `SepidarGateway/appsettings.TenantSample.json` را کپی کنید و در فایل محیطی خود (مثل `appsettings.Production.json`) قرار دهید.
-2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، فایل محیط مناسب (مثلاً `env/Production/gateway.env`) را باز کنید و همان مقادیر را در آن فایل یا نسخهٔ کپی شدهٔ آن بروزرسانی کنید.
+2. مقادیر ستون «مقدار فعلی در سورس» را با داده‌های مشتری جدید جایگزین کنید. اگر از Docker استفاده می‌کنید، فایل `gateway.env` را باز کنید و مقادیر حساس را در همان فایل یا نسخهٔ کپی شدهٔ آن بروزرسانی کنید.
 3. اولین بار که گیت‌وی اجرا می‌شود و عملیات `RegisterDevice` موفق باشد، مقادیر `RsaPublicKeyXml`، `RsaModulusBase64` و `RsaExponentBase64` در لاگ چاپ می‌شود؛ آن‌ها را در بخش `Crypto` ذخیره کنید تا دفعه بعد نیازی به رجیستر مجدد نباشد.
 4. در صورت نیاز، API Key یا تنظیمات CORS را برای مشتری فعال کنید (آرایه‌ها را خالی گذاشته‌ایم تا اختیاری باشند).
 
@@ -124,7 +122,7 @@ export PATH="$HOME/.dotnet:$PATH"
 dotnet build
 
 # Load development secrets (در صورت نیاز مسیر محیط دیگری را جایگزین کنید)
-source ../env/Development/gateway.env
+source ../gateway.env
 
 # Run the gateway (locally on port 5259)
 cd SepidarGateway
@@ -171,11 +169,11 @@ docker compose up --build
 
 - `Dockerfile` targets `mcr.microsoft.com/dotnet/aspnet:9.0-alpine` and exposes port **5259**.
 - `docker-compose.yml` starts only the gateway container and uses the production Sepidar endpoint (`http://178.131.66.32:7373`).
-- برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV همان محیط (مثلاً `env/Production/gateway.env`) بسازید، شاخص تننت (`T0`, `T1`, ...) را افزایش دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
+- برای اجرای مشتری‌های بیشتر، یک کپی از فایل ENV (`gateway.env`) بسازید، شاخص تننت یا نام فایل را متناسب با نیاز خود تغییر دهید و مسیر فایل جدید را در سرویس مربوطه قرار دهید.
 
 ### عیب‌یابی سریع
 
-- اگر Swagger یا درخواست‌ها 404 می‌دهند، ابتدا تطبیق تننت را ساده کنید تا تست محلی راحت شود. نمونه تنظیمات در `env/Production/gateway.env` اضافه شده است:
+- اگر Swagger یا درخواست‌ها 404 می‌دهند، ابتدا تطبیق تننت را ساده کنید تا تست محلی راحت شود. نمونه تنظیمات در `gateway.env` اضافه شده است:
   - `GW_T0_MATCH_HOSTNAMES=localhost`
   - `GW_T0_MATCH_PATHBASE=/`
   - `GW_T0_MATCH_HEADER_HEADERVALUES=MAIN`

@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -150,6 +151,8 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             throw new InvalidOperationException("Gateway credentials are not configured.");
         }
 
+        OverrideCredentialsFromEnvironment(settings);
+
         settings.Sepidar.DeviceSerial = settings.Sepidar.DeviceSerial?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(settings.Sepidar.DeviceSerial))
         {
@@ -173,12 +176,27 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
         if (string.IsNullOrEmpty(settings.Credentials.UserName))
         {
-            throw new InvalidOperationException("Tenant username is not configured.");
+            throw new InvalidOperationException("Environment variable 'SEPIDAR_GATEWAY_USERNAME' is not configured.");
         }
 
         if (string.IsNullOrEmpty(settings.Credentials.Password))
         {
-            throw new InvalidOperationException("Tenant password is not configured.");
+            throw new InvalidOperationException("Environment variable 'SEPIDAR_GATEWAY_PASSWORD' is not configured.");
+        }
+    }
+
+    private static void OverrideCredentialsFromEnvironment(GatewaySettings settings)
+    {
+        var userNameEnv = Environment.GetEnvironmentVariable("SEPIDAR_GATEWAY_USERNAME");
+        if (!string.IsNullOrWhiteSpace(userNameEnv))
+        {
+            settings.Credentials.UserName = userNameEnv;
+        }
+
+        var passwordEnv = Environment.GetEnvironmentVariable("SEPIDAR_GATEWAY_PASSWORD");
+        if (!string.IsNullOrWhiteSpace(passwordEnv))
+        {
+            settings.Credentials.Password = passwordEnv;
         }
     }
 

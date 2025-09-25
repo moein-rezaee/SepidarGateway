@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using SepidarGateway.Contracts;
@@ -18,7 +19,6 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
 
 builder.Services.AddOptions<GatewayOptions>()
@@ -148,19 +148,23 @@ static HttpMessageHandler CreateSepidarHandler(IServiceProvider services)
 static void MapHealthEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 {
     var prefix = string.IsNullOrEmpty(versionPrefix) ? string.Empty : versionPrefix!.TrimEnd('/');
-    var group = app.MapGroup($"{prefix}/Health");
+    MapHealthGroup(app.MapGroup($"{prefix}/Health"));
+    MapHealthGroup(app.MapGroup($"{prefix}/health"));
 
-    group.MapGet("/Live", () => Results.Json(new { Status = "Live" }))
-        .WithTags("Health")
-        .WithSummary("Liveness probe for the gateway host");
+    static void MapHealthGroup(RouteGroupBuilder group)
+    {
+        group.MapGet("/Live", () => Results.Json(new { Status = "Live" }))
+            .WithTags("Health")
+            .WithSummary("Liveness probe for the gateway host");
 
-    group.MapGet("/Ready", async (ISepidarGatewayService service, CancellationToken ct) =>
-        {
-            var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
-            return Results.Json(new { Status = authorized ? "Ready" : "Degraded", Authorized = authorized });
-        })
-        .WithTags("Health")
-        .WithSummary("Readiness probe validating Sepidar authorization");
+        group.MapGet("/Ready", async (ISepidarGatewayService service, CancellationToken ct) =>
+            {
+                var authorized = await service.EnsureAuthorizationAsync(ct).ConfigureAwait(false);
+                return Results.Json(new { Status = authorized ? "Ready" : "Degraded", Authorized = authorized });
+            })
+            .WithTags("Health")
+            .WithSummary("Readiness probe validating Sepidar authorization");
+    }
 }
 
 static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
@@ -200,8 +204,23 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
 
     group.MapPost("/Login", async (ISepidarGatewayService service, CancellationToken ct) =>
     {
-        var response = await service.LoginAsync(ct).ConfigureAwait(false);
-        return Results.Ok(response);
+        try
+        {
+            var response = await service.LoginAsync(ct).ConfigureAwait(false);
+            return Results.Ok(response);
+        }
+        catch (SepidarAuthenticationException authEx)
+        {
+            return Results.Json(new { error = authEx.Message }, statusCode: (int)authEx.StatusCode);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        catch (HttpRequestException httpEx)
+        {
+            return Results.Json(new { error = httpEx.Message }, statusCode: StatusCodes.Status502BadGateway);
+        }
     })
     .WithTags("SepidarGateway")
     .WithSummary("Login to Sepidar and return token details");

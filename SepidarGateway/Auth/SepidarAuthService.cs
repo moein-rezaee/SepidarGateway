@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -45,11 +46,11 @@ public sealed class SepidarAuthService : ISepidarAuth
         var authState = _state;
         if (!authState.Registered && HasRsaConfigured(tenant.Crypto))
         {
-            // Assume device already registered when RSA is pre-provisioned via configuration
             authState.Registered = true;
             authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
             return;
         }
+
         if (authState.Registered)
         {
             return;
@@ -63,9 +64,14 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return;
             }
 
-            var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            authState.Registered = true;
-            authState.LastRegisterResponse = registerResult;
+            if (HasRsaConfigured(tenant.Crypto))
+            {
+                authState.Registered = true;
+                authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
+                return;
+            }
+
+            throw new InvalidOperationException("Sepidar device is not registered. Call /Device/Register before logging in.");
         }
         finally
         {
@@ -113,10 +119,18 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return freshToken;
             }
 
-            var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            authState.Token = LoginResult.Token;
-            authState.ExpiresAt = LoginResult.ExpiresAt;
-            return LoginResult.Token;
+            try
+            {
+                var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+                authState.Token = LoginResult.Token;
+                authState.ExpiresAt = LoginResult.ExpiresAt;
+                return LoginResult.Token;
+            }
+            catch (SepidarAuthenticationException)
+            {
+                InvalidateToken();
+                throw;
+            }
         }
         finally
         {
@@ -132,10 +146,18 @@ public sealed class SepidarAuthService : ISepidarAuth
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            authState.Token = LoginResult.Token;
-            authState.ExpiresAt = LoginResult.ExpiresAt;
-            return MapLoginResult(LoginResult);
+            try
+            {
+                var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+                authState.Token = LoginResult.Token;
+                authState.ExpiresAt = LoginResult.ExpiresAt;
+                return MapLoginResult(LoginResult);
+            }
+            catch (SepidarAuthenticationException)
+            {
+                InvalidateToken();
+                throw;
+            }
         }
         finally
         {
@@ -550,13 +572,21 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
-        if (LoginResponseMessage.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
+        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+        if (LoginResponseMessage.StatusCode == HttpStatusCode.PreconditionFailed)
         {
             throw new InvalidOperationException("Generation version mismatch");
         }
 
-        LoginResponseMessage.EnsureSuccessStatusCode();
-        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!LoginResponseMessage.IsSuccessStatusCode)
+        {
+            var errorMessage = ParseSepidarErrorMessage(ResponseContent);
+            var statusCode = LoginResponseMessage.StatusCode;
+            _logger.LogWarning("Sepidar login failed for gateway {Gateway} with status {StatusCode}: {Message}", tenant.Name, (int)statusCode, errorMessage ?? ResponseContent);
+            throw new SepidarAuthenticationException(statusCode, errorMessage ?? string.Empty, ResponseContent);
+        }
+
         var LoginResponse = JsonSerializer.Deserialize<LoginResponse>(ResponseContent, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
@@ -889,6 +919,46 @@ public sealed class SepidarAuthService : ISepidarAuth
             CanPrintReturnInvoiceBeforeSend = Response.CanPrintReturnInvoiceBeforeSend,
             CanRevokeInvoice = Response.CanRevokeInvoice
         };
+    }
+
+    private static string? ParseSepidarErrorMessage(string responseContent)
+    {
+        if (string.IsNullOrWhiteSpace(responseContent))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(responseContent);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("Message", out var messageProperty) && messageProperty.ValueKind == JsonValueKind.String)
+                {
+                    return messageProperty.GetString();
+                }
+
+                if (root.TryGetProperty("error", out var errorProperty))
+                {
+                    if (errorProperty.ValueKind == JsonValueKind.String)
+                    {
+                        return errorProperty.GetString();
+                    }
+
+                    if (errorProperty.ValueKind == JsonValueKind.Object && errorProperty.TryGetProperty("message", out var nestedMessage) && nestedMessage.ValueKind == JsonValueKind.String)
+                    {
+                        return nestedMessage.GetString();
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
     }
 
     private sealed record LoginResponse
