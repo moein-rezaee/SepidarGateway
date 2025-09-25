@@ -287,11 +287,64 @@ public sealed class SepidarAuthService : ISepidarAuth
             tenant.Sepidar.DeviceTitle = snapshot.DeviceTitle;
         }
 
-        tenant.Crypto.RsaPublicKeyXml = snapshot.Crypto.RsaPublicKeyXml;
-        tenant.Crypto.RsaModulusBase64 = snapshot.Crypto.RsaModulusBase64;
-        tenant.Crypto.RsaExponentBase64 = snapshot.Crypto.RsaExponentBase64;
+        try
+        {
+            CryptoOptions? cryptoToApply = null;
 
-        return true;
+            if (!string.IsNullOrWhiteSpace(snapshot.Cypher) && !string.IsNullOrWhiteSpace(snapshot.Iv))
+            {
+                var plainText = _crypto.DecryptRegisterPayload(
+                    tenant.Sepidar.DeviceSerial ?? string.Empty,
+                    snapshot.Cypher,
+                    snapshot.Iv);
+
+                var registerCrypto = ParseRegisterCryptoResponse(plainText)
+                                     ?? throw new InvalidOperationException("Cached register payload is invalid.");
+
+                cryptoToApply = new CryptoOptions
+                {
+                    RsaPublicKeyXml = registerCrypto.RsaPublicKeyXml,
+                    RsaModulusBase64 = registerCrypto.RsaModulusBase64,
+                    RsaExponentBase64 = registerCrypto.RsaExponentBase64
+                };
+            }
+            else if (HasRsaConfigured(snapshot.Crypto))
+            {
+                cryptoToApply = CloneCryptoOptions(snapshot.Crypto);
+            }
+
+            if (cryptoToApply is null)
+            {
+                throw new InvalidOperationException("Cached registration does not include crypto material.");
+            }
+
+            tenant.Crypto.RsaPublicKeyXml = cryptoToApply.RsaPublicKeyXml;
+            tenant.Crypto.RsaModulusBase64 = cryptoToApply.RsaModulusBase64;
+            tenant.Crypto.RsaExponentBase64 = cryptoToApply.RsaExponentBase64;
+
+            authState.RegisterSnapshot = new RegisteredDeviceSnapshot(
+                snapshot.DeviceSerial,
+                snapshot.IntegrationId,
+                snapshot.GenerationVersion,
+                CloneCryptoOptions(tenant.Crypto),
+                snapshot.CachedAt,
+                snapshot.Cypher,
+                snapshot.Iv,
+                snapshot.DeviceTitle);
+
+            return true;
+        }
+        catch (Exception ex) when (ex is CryptographicException or InvalidOperationException or FormatException or ArgumentException)
+        {
+            _logger.LogWarning(ex, "Failed to decrypt cached registration for gateway {Gateway}.", tenant.Name);
+            authState.RegisterSnapshot = null;
+            authState.Registered = false;
+            authState.LastRegisterResponse = null;
+            tenant.Crypto.RsaPublicKeyXml = null;
+            tenant.Crypto.RsaModulusBase64 = null;
+            tenant.Crypto.RsaExponentBase64 = null;
+            return false;
+        }
     }
 
     private void EnsureSnapshotFromTenant(GatewaySettings tenant)
