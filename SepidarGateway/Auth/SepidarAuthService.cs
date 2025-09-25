@@ -43,6 +43,69 @@ public sealed class SepidarAuthService : ISepidarAuth
         _logger = logger;
     }
 
+    private async Task ApplyLoginOverridesAsync(GatewaySettings tenant, DeviceLoginRequestDto? request, CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return;
+        }
+
+        var authState = _state;
+        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
+            {
+                tenant.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.IntegrationId))
+            {
+                tenant.Sepidar.IntegrationId = request.IntegrationId.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.GenerationVersion))
+            {
+                tenant.Sepidar.GenerationVersion = request.GenerationVersion.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.UserName))
+            {
+                tenant.Credentials.UserName = request.UserName.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Password))
+            {
+                tenant.Credentials.Password = request.Password.Trim();
+            }
+
+            if (request.RegisterPayload is { } payload)
+            {
+                if (!string.IsNullOrWhiteSpace(payload.DeviceTitle))
+                {
+                    tenant.Sepidar.DeviceTitle = payload.DeviceTitle.Trim();
+                }
+
+                if (!string.IsNullOrWhiteSpace(payload.Cypher) && !string.IsNullOrWhiteSpace(payload.Iv))
+                {
+                    ApplyRegisterPayload(tenant, payload.Cypher.Trim(), payload.Iv.Trim(), payload.DeviceTitle);
+                    authState.Registered = true;
+                    authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
+                    return;
+                }
+            }
+
+            if (HasRsaConfigured(tenant.Crypto))
+            {
+                EnsureSnapshotFromTenant(tenant);
+            }
+        }
+        finally
+        {
+            authState.Lock.Release();
+        }
+    }
+
     public async Task EnsureDeviceRegisteredAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         var authState = _state;
@@ -156,8 +219,9 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, DeviceLoginRequestDto? request, CancellationToken cancellationToken)
     {
+        await ApplyLoginOverridesAsync(tenant, request, cancellationToken).ConfigureAwait(false);
         var authState = _state;
         await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
 
@@ -387,6 +451,24 @@ public sealed class SepidarAuthService : ISepidarAuth
         {
             tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle.Trim();
         }
+    }
+
+    private void ApplyRegisterPayload(GatewaySettings tenant, string cypher, string iv, string? deviceTitle)
+    {
+        var plainText = _crypto.DecryptRegisterPayload(
+            tenant.Sepidar.DeviceSerial ?? string.Empty,
+            cypher,
+            iv);
+
+        var tenantCrypto = ParseRegisterCryptoResponse(plainText)
+                           ?? throw new InvalidOperationException("Invalid register payload");
+
+        tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
+        tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
+        tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
+
+        var payload = new RegisterResponse(cypher, iv, TrimOrNull(deviceTitle));
+        CacheRegistrationSnapshot(tenant, payload);
     }
 
     private async Task RefreshRegistrationAsync(GatewaySettings tenant, CancellationToken cancellationToken)
@@ -705,19 +787,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
-            var plainText = _crypto.DecryptRegisterPayload(
-                tenant.Sepidar.DeviceSerial ?? string.Empty,
-                registerPayload.Cypher,
-                registerPayload.IV);
-
-            var tenantCrypto = ParseRegisterCryptoResponse(plainText)
-                               ?? throw new InvalidOperationException("Invalid crypto payload");
-
-            tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
-            tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
-            tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
-
-            CacheRegistrationSnapshot(tenant, registerPayload);
+            ApplyRegisterPayload(tenant, registerPayload.Cypher, registerPayload.IV, registerPayload.DeviceTitle);
 
             return new RegisterAttemptResult(registerPath, rawResponse, Success: true);
         }
