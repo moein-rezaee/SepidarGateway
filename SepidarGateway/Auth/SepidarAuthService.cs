@@ -47,6 +47,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         {
             // Assume device already registered when RSA is pre-provisioned via configuration
             authState.Registered = true;
+            authState.LastRegisterResponse ??= new RegisterDeviceRawResponse(string.Empty, null);
             return;
         }
         if (authState.Registered)
@@ -62,8 +63,26 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return;
             }
 
-            await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
             authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
+        }
+        finally
+        {
+            authState.Lock.Release();
+        }
+    }
+
+    public async Task<RegisterDeviceRawResponse> RegisterDeviceAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    {
+        var authState = _state;
+        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
+            return registerResult;
         }
         finally
         {
@@ -186,7 +205,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         authState.LastAuthorizationCheck = DateTimeOffset.MinValue;
     }
 
-    private async Task RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    private async Task<RegisterDeviceRawResponse> RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Registering Sepidar device for gateway {Gateway}", tenant.Name);
         var HttpClient = CreateHttpClient(tenant);
@@ -295,28 +314,28 @@ public sealed class SepidarAuthService : ISepidarAuth
 
                 AttemptedPaths.Add(RegisterPath);
 
-                var success = false;
+                RegisterDeviceRawResponse? registerResult = null;
                 foreach (var body in variantBodies)
                 {
-                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
-                    if (success)
+                    registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
+                    if (registerResult is not null)
                     {
                         break;
                     }
 
-                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
-                    if (success)
+                    registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
+                    if (registerResult is not null)
                     {
                         break;
                     }
                 }
 
-                if (!success)
+                if (registerResult is null)
                 {
                     continue;
                 }
 
-                return;
+                return registerResult;
             }
 
             if (DiscoveryAttempted || tenant.Sepidar.RegisterStrict)
@@ -395,7 +414,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    private async Task<bool> AttemptRegisterAsync(HttpClient httpClient, GatewaySettings tenant, string registerPath, string requestBody, bool includeApiVersion, CancellationToken cancellationToken)
+    private async Task<RegisterDeviceRawResponse?> AttemptRegisterAsync(HttpClient httpClient, GatewaySettings tenant, string registerPath, string requestBody, bool includeApiVersion, CancellationToken cancellationToken)
     {
         var registerUri = BuildTenantUri(tenant, registerPath, includeApiVersionQuery: includeApiVersion);
         using var registerRequest = new HttpRequestMessage(HttpMethod.Post, registerUri)
@@ -421,7 +440,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 tenant.Name,
                 registerUri,
                 socketException.SocketErrorCode);
-            return false;
+            return null;
         }
 
         using (response)
@@ -429,7 +448,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 _logger.LogWarning("Register endpoint {Path} not found for gateway {Gateway} (URI: {Uri})", registerPath, tenant.Name, registerUri);
-                return false;
+                return null;
             }
 
             if (!response.IsSuccessStatusCode)
@@ -443,7 +462,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 catch { }
 
                 _logger.LogError("Register endpoint {Path} returned {StatusCode} for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.Name, registerUri, snippet);
-                return false;
+                return null;
             }
 
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -452,21 +471,21 @@ public sealed class SepidarAuthService : ISepidarAuth
             {
                 var snippet = responseBody.Length > 500 ? responseBody.Substring(0, 500) + "..." : responseBody;
                 _logger.LogError("Register endpoint {Path} returned an unrecognized payload for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, tenant.Name, registerUri, snippet);
-                return false;
+                return null;
             }
-        var plainText = _crypto.DecryptRegisterPayload(
-            tenant.Sepidar.DeviceSerial ?? string.Empty,
-            registerPayload.Cypher,
-            registerPayload.IV);
+            var plainText = _crypto.DecryptRegisterPayload(
+                tenant.Sepidar.DeviceSerial ?? string.Empty,
+                registerPayload.Cypher,
+                registerPayload.IV);
 
-        var tenantCrypto = ParseRegisterCryptoResponse(plainText)
-                           ?? throw new InvalidOperationException("Invalid crypto payload");
+            var tenantCrypto = ParseRegisterCryptoResponse(plainText)
+                               ?? throw new InvalidOperationException("Invalid crypto payload");
 
             tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
             tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
             tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
 
-            return true;
+            return new RegisterDeviceRawResponse(responseBody, response.Content.Headers.ContentType?.ToString());
         }
     }
 
@@ -886,6 +905,7 @@ public sealed class SepidarAuthService : ISepidarAuth
     {
         public SemaphoreSlim Lock { get; } = new(1, 1);
         public bool Registered { get; set; }
+        public RegisterDeviceRawResponse? LastRegisterResponse { get; set; }
         public string? Token { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
         public DateTimeOffset LastAuthorizationCheck { get; set; } = DateTimeOffset.MinValue;

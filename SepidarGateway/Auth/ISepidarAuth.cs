@@ -7,6 +7,8 @@ public interface ISepidarAuth
 {
     Task EnsureDeviceRegisteredAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
+    Task<RegisterDeviceRawResponse> RegisterDeviceAsync(GatewaySettings settings, CancellationToken cancellationToken);
+
     Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
     Task<string> EnsureTokenAsync(GatewaySettings settings, CancellationToken cancellationToken);

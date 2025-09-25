@@ -1,7 +1,6 @@
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using SepidarGateway.Contracts;
@@ -71,21 +70,12 @@ var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseCors();
 app.UseSwagger();
-app.UseStaticFiles();
 app.UseSwaggerUI(options =>
 {
     options.SwaggerEndpoint($"/swagger/{SwaggerConstants.DocumentName}/swagger.json", "Sepidar Gateway");
     options.RoutePrefix = "swagger";
     options.DisplayRequestDuration();
 });
-
-app.MapGet("/stoplight-elements.css", (IWebHostEnvironment env) =>
-    ServeStaticAsset(env, "stoplight/styles.min.css", "text/css"))
-    .ExcludeFromDescription();
-
-app.MapGet("/stoplight-elements.js", (IWebHostEnvironment env) =>
-    ServeStaticAsset(env, "stoplight/web-components.min.js", "application/javascript"))
-    .ExcludeFromDescription();
 
 var optionsMonitor = app.Services.GetRequiredService<IOptionsMonitor<GatewayOptions>>();
 var gatewayOptions = optionsMonitor.CurrentValue;
@@ -109,8 +99,6 @@ foreach (var version in configuredVersions)
 }
 
 app.MapGet("/", () => Results.Redirect("/swagger"));
-app.MapGet("/docs", () => Results.Content(BuildStoplightHtml(), "text/html"))
-    .ExcludeFromDescription();
 
 app.Run();
 
@@ -183,7 +171,16 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
         try
         {
             var response = await service.RegisterDeviceAsync(request, ct).ConfigureAwait(false);
-            return Results.Json(response);
+            if (string.IsNullOrEmpty(response.Body))
+            {
+                return Results.NoContent();
+            }
+
+            var contentType = string.IsNullOrWhiteSpace(response.ContentType)
+                ? "application/json"
+                : response.ContentType;
+
+            return Results.Content(response.Body, contentType);
         }
         catch (InvalidOperationException ex)
         {
@@ -313,53 +310,6 @@ static string ResolveForwardPath(string requestPath, string? versionPrefix)
     }
 
     return requestPath;
-}
-
-static IResult ServeStaticAsset(IWebHostEnvironment environment, string relativePath, string contentType)
-{
-    var file = environment.WebRootFileProvider.GetFileInfo(relativePath);
-    if (!file.Exists || string.IsNullOrEmpty(file.PhysicalPath))
-    {
-        return Results.NotFound();
-    }
-
-    return Results.File(file.PhysicalPath, contentType);
-}
-
-static string BuildStoplightHtml()
-{
-    return """
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Sepidar Gateway Docs</title>
-    <link rel="stylesheet" href="/stoplight-elements.css" />
-    <script src="/stoplight-elements.js"></script>
-    <style>
-      body {
-        margin: 0;
-        font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-        background-color: #0f172a;
-      }
-
-      elements-api {
-        min-height: 100vh;
-      }
-    </style>
-  </head>
-  <body>
-    <elements-api
-      api-description-url="/swagger/sepidar/swagger.json"
-      router="hash"
-      layout="sidebar"
-      try-it="true"
-      hide-download-button="false"
-    ></elements-api>
-  </body>
-</html>
-""";
 }
 
 public partial class Program;

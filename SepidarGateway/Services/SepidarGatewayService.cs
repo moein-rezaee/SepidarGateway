@@ -10,7 +10,7 @@ namespace SepidarGateway.Services;
 
 public interface ISepidarGatewayService
 {
-    Task<DeviceRegisterResponseDto> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
+    Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
 
     Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
 
@@ -52,7 +52,7 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         _logger = logger;
     }
 
-    public async Task<DeviceRegisterResponseDto> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
+    public async Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
     {
         if (request is null)
         {
@@ -77,28 +77,12 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
         try
         {
-            await _auth.EnsureDeviceRegisteredAsync(settings, cancellationToken).ConfigureAwait(false);
-            return new DeviceRegisterResponseDto
-            {
-                Ok = true,
-                DeviceSerial = settings.Sepidar.DeviceSerial,
-                IntegrationId = settings.Sepidar.IntegrationId,
-                Rsa = new DeviceRegisterRsaDto
-                {
-                    RsaPublicKeyXml = settings.Crypto.RsaPublicKeyXml,
-                    RsaModulusBase64 = settings.Crypto.RsaModulusBase64,
-                    RsaExponentBase64 = settings.Crypto.RsaExponentBase64
-                }
-            };
+            return await _auth.RegisterDeviceAsync(settings, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to register Sepidar device");
-            return new DeviceRegisterResponseDto
-            {
-                Ok = false,
-                Error = ex.Message
-            };
+            throw;
         }
     }
 
