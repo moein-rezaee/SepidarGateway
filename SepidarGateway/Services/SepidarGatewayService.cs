@@ -77,14 +77,9 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             throw new InvalidOperationException("Missing 'deviceSerial'");
         }
 
-        settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
-        settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
-        settings.Sepidar.RegisterPayloadMode = "IntegrationOnly";
+        ApplyConfiguredValues(settings);
 
-        if (string.IsNullOrWhiteSpace(settings.Sepidar.IntegrationId))
-        {
-            throw new InvalidOperationException("Unable to derive IntegrationID from deviceSerial");
-        }
+        settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
 
         try
         {
@@ -425,27 +420,6 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         return settings;
-    }
-
-    private static string DeriveIntegrationId(string serial)
-    {
-        if (string.IsNullOrWhiteSpace(serial))
-        {
-            return string.Empty;
-        }
-
-        var digits = new string(serial.Where(char.IsDigit).ToArray());
-        if (digits.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        if (digits.Length >= 4)
-        {
-            return digits[..4];
-        }
-
-        return digits.PadRight(4, '0');
     }
 
     private static Uri BuildTargetUri(GatewaySettings settings, string downstreamPath, QueryString queryString)
