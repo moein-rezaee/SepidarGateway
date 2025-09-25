@@ -1,4 +1,5 @@
 using SepidarGateway.Configuration;
+using SepidarGateway.Contracts;
 
 namespace SepidarGateway.Auth;
 
@@ -8,10 +9,7 @@ public interface ISepidarAuth
 
     Task<RegisterDeviceRawResponse> RegisterDeviceAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
-    Task<DeviceLoginRawResponse> LoginAsync(
-        GatewaySettings settings,
-        RegisterPayloadSnapshot? registerPayload,
-        CancellationToken cancellationToken);
+    Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings settings, CancellationToken cancellationToken);
 
     Task<string> EnsureTokenAsync(GatewaySettings settings, CancellationToken cancellationToken);
 

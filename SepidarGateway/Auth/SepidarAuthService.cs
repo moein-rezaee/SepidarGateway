@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -9,8 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
-using Microsoft.AspNetCore.Http;
 using SepidarGateway.Configuration;
+using SepidarGateway.Contracts;
 using SepidarGateway.Crypto;
 
 namespace SepidarGateway.Auth;
@@ -21,7 +20,6 @@ public sealed class SepidarAuthService : ISepidarAuth
     private readonly ISepidarCrypto _crypto;
     private readonly ILogger<SepidarAuthService> _logger;
     private readonly AuthState _state = new();
-    private static readonly TimeSpan RegisterCacheLifetime = TimeSpan.FromMinutes(2);
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -50,12 +48,9 @@ public sealed class SepidarAuthService : ISepidarAuth
             // Assume device already registered when RSA is pre-provisioned via configuration
             authState.Registered = true;
             authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
-            authState.RegisterCacheEntry = null;
-            authState.RegisterExpiresAt = DateTimeOffset.MaxValue;
             return;
         }
-
-        if (authState.Registered && authState.RegisterExpiresAt > DateTimeOffset.UtcNow)
+        if (authState.Registered)
         {
             return;
         }
@@ -63,22 +58,14 @@ public sealed class SepidarAuthService : ISepidarAuth
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!authState.Registered && HasRsaConfigured(tenant.Crypto))
-            {
-                authState.Registered = true;
-                authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
-                authState.RegisterCacheEntry = null;
-                authState.RegisterExpiresAt = DateTimeOffset.MaxValue;
-                return;
-            }
-
-            if (authState.Registered && authState.RegisterExpiresAt > DateTimeOffset.UtcNow)
+            if (authState.Registered)
             {
                 return;
             }
 
             var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            UpdateRegisterCache(authState, registerResult.Response, registerResult.CacheEntry);
+            authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
         }
         finally
         {
@@ -92,16 +79,15 @@ public sealed class SepidarAuthService : ISepidarAuth
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (authState.Registered &&
-                authState.RegisterExpiresAt > DateTimeOffset.UtcNow &&
-                authState.LastRegisterResponse is { } cached)
+            if (authState.Registered && authState.LastRegisterResponse is { } cached)
             {
                 return cached;
             }
 
             var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
-            UpdateRegisterCache(authState, registerResult.Response, registerResult.CacheEntry);
-            return registerResult.Response;
+            authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
+            return registerResult;
         }
         finally
         {
@@ -127,11 +113,6 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return freshToken;
             }
 
-            if (authState.RegisterCacheEntry is null && authState.RegisterExpiresAt <= DateTimeOffset.UtcNow)
-            {
-                throw new InvalidOperationException("Device registration cache is empty. Please register the device again.");
-            }
-
             var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
             authState.Token = LoginResult.Token;
             authState.ExpiresAt = LoginResult.ExpiresAt;
@@ -143,32 +124,18 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    public async Task<DeviceLoginRawResponse> LoginAsync(
-        GatewaySettings tenant,
-        RegisterPayloadSnapshot? registerPayload,
-        CancellationToken cancellationToken)
+    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
-        if (registerPayload is not null)
-        {
-            await PrimeRegisterCacheAsync(tenant, registerPayload, cancellationToken).ConfigureAwait(false);
-        }
-
-        await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
-
         var authState = _state;
+        await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
 
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (authState.RegisterCacheEntry is null && authState.RegisterExpiresAt <= DateTimeOffset.UtcNow)
-            {
-                throw new InvalidOperationException("Device registration cache is empty. Please register the device again.");
-            }
-
             var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
             authState.Token = LoginResult.Token;
             authState.ExpiresAt = LoginResult.ExpiresAt;
-            return LoginResult.RawResponse;
+            return MapLoginResult(LoginResult);
         }
         finally
         {
@@ -243,7 +210,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         authState.LastAuthorizationCheck = DateTimeOffset.MinValue;
     }
 
-    private async Task<RegisterResult> RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    private async Task<RegisterDeviceRawResponse> RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Registering Sepidar device for gateway {Gateway}", tenant.Name);
         var HttpClient = CreateHttpClient(tenant);
@@ -256,7 +223,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
 
         var integrationIdValue = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
-        tenant.Sepidar.IntegrationId = integrationIdValue;
         if (string.Equals(payloadMode, "IntegrationOnly", StringComparison.OrdinalIgnoreCase))
         {
             DevicePayload = integrationIdValue;
@@ -360,7 +326,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                     registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
                     if (registerResult is { Success: true })
                     {
-                        return new RegisterResult(registerResult.Response, registerResult.CacheEntry);
+                        return registerResult.Response;
                     }
 
                     if (registerResult is not null)
@@ -371,7 +337,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                     registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
                     if (registerResult is { Success: true })
                     {
-                        return new RegisterResult(registerResult.Response, registerResult.CacheEntry);
+                        return registerResult.Response;
                     }
 
                     if (registerResult is not null)
@@ -502,14 +468,14 @@ public sealed class SepidarAuthService : ISepidarAuth
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 _logger.LogWarning("Register endpoint {Path} not found for gateway {Gateway} (URI: {Uri})", registerPath, tenant.Name, registerUri);
-                return new RegisterAttemptResult(registerPath, rawResponse, Success: false, null);
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
             if (!response.IsSuccessStatusCode)
             {
                 var snippet = responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody;
                 _logger.LogError("Register endpoint {Path} returned {StatusCode} for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.Name, registerUri, snippet);
-                return new RegisterAttemptResult(registerPath, rawResponse, Success: false, null);
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
             var registerPayload = ParseRegisterResponse(responseBody);
@@ -517,7 +483,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             {
                 var snippet = responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody;
                 _logger.LogError("Register endpoint {Path} returned an unrecognized payload for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, tenant.Name, registerUri, snippet);
-                return new RegisterAttemptResult(registerPath, rawResponse, Success: false, null);
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
             var plainText = _crypto.DecryptRegisterPayload(
@@ -532,52 +498,17 @@ public sealed class SepidarAuthService : ISepidarAuth
             tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
             tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
 
-            if (!string.IsNullOrWhiteSpace(registerPayload.DeviceTitle))
-            {
-                tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle;
-            }
-
-            var cacheEntry = new RegisterCacheEntry
-            {
-                Cypher = registerPayload.Cypher,
-                IV = registerPayload.IV,
-                DeviceTitle = registerPayload.DeviceTitle,
-                CachedAt = DateTimeOffset.UtcNow
-            };
-
-            return new RegisterAttemptResult(registerPath, rawResponse, Success: true, cacheEntry);
+            return new RegisterAttemptResult(registerPath, rawResponse, Success: true);
         }
     }
 
-    private sealed record RegisterAttemptResult(string Path, RegisterDeviceRawResponse Response, bool Success, RegisterCacheEntry? CacheEntry);
-
-    private sealed record RegisterResult(RegisterDeviceRawResponse Response, RegisterCacheEntry? CacheEntry);
+    private sealed record RegisterAttemptResult(string Path, RegisterDeviceRawResponse Response, bool Success);
 
     private async Task<LoginResult> LoginInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Logging in gateway {Gateway}", tenant.Name);
         var HttpClient = CreateHttpClient(tenant);
-        var generationVersion = (tenant.Sepidar.GenerationVersion ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(generationVersion))
-        {
-            throw new InvalidOperationException("Generation version is not configured.");
-        }
-
-        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(integrationId))
-        {
-            throw new InvalidOperationException("Integration ID is not configured.");
-        }
-
-        if (!integrationId.All(char.IsDigit))
-        {
-            throw new InvalidOperationException("Integration ID is not numeric.");
-        }
-
-        tenant.Sepidar.GenerationVersion = generationVersion;
-        tenant.Sepidar.IntegrationId = integrationId;
-
-        var ArbitraryCode = Guid.NewGuid().ToString("D").ToLowerInvariant();
+        var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
 
         // لاگین بدون api-version در Query بر اساس کرل موفق
@@ -602,10 +533,10 @@ public sealed class SepidarAuthService : ISepidarAuth
         using var LoginRequest = new HttpRequestMessage(HttpMethod.Post, LoginUri);
         // هدر api-version برای Login ارسال نمی‌شود تا کاملاً مطابق کرل باشد
 
-        LoginRequest.Headers.TryAddWithoutValidation("GenerationVersion", generationVersion);
-        LoginRequest.Headers.TryAddWithoutValidation("IntegrationID", integrationId);
-        LoginRequest.Headers.TryAddWithoutValidation("ArbitraryCode", ArbitraryCode);
-        LoginRequest.Headers.TryAddWithoutValidation("EncArbitraryCode", EncryptedCode);
+        LoginRequest.Headers.Add("GenerationVersion", tenant.Sepidar.GenerationVersion);
+        LoginRequest.Headers.Add("IntegrationID", tenant.Sepidar.IntegrationId);
+        LoginRequest.Headers.Add("ArbitraryCode", ArbitraryCode);
+        LoginRequest.Headers.Add("EncArbitraryCode", EncryptedCode);
 
         var PasswordHash = LooksLikeMd5(password)
             ? password.ToLowerInvariant()
@@ -619,89 +550,20 @@ public sealed class SepidarAuthService : ISepidarAuth
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
-        if (LoginResponseMessage.StatusCode == HttpStatusCode.PreconditionFailed)
+        if (LoginResponseMessage.StatusCode == System.Net.HttpStatusCode.PreconditionFailed)
         {
             throw new InvalidOperationException("Generation version mismatch");
         }
 
-        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var ContentType = LoginResponseMessage.Content.Headers.ContentType?.ToString();
-
-        if (LoginResponseMessage.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-        {
-            var errorMessage = ExtractLoginErrorMessage(ResponseContent, LoginResponseMessage.StatusCode);
-            var rawError = new DeviceLoginRawResponse(ResponseContent, ContentType, (int)LoginResponseMessage.StatusCode);
-            throw new AuthenticationFailedException(errorMessage, rawError);
-        }
-
         LoginResponseMessage.EnsureSuccessStatusCode();
+        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var LoginResponse = JsonSerializer.Deserialize<LoginResponse>(ResponseContent, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
         var ExpiresInSeconds = LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds;
         var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
-        var rawSuccess = new DeviceLoginRawResponse(ResponseContent, ContentType, (int)LoginResponseMessage.StatusCode);
-
-        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds, rawSuccess);
-    }
-
-    private static string ExtractLoginErrorMessage(string? responseBody, HttpStatusCode statusCode)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return statusCode switch
-            {
-                HttpStatusCode.BadRequest => "Sepidar rejected the login request.",
-                HttpStatusCode.Forbidden => "The Sepidar user does not have permission to sign in.",
-                HttpStatusCode.Unauthorized => "Invalid Sepidar credentials.",
-                _ => "Sepidar login failed."
-            };
-        }
-
-        var trimmed = responseBody.Trim();
-        if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(trimmed);
-                if (document.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (var property in document.RootElement.EnumerateObject())
-                    {
-                        if (!property.Name.Equals("message", StringComparison.OrdinalIgnoreCase) &&
-                            !property.Name.EndsWith("Message", StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
-                        if (property.Value.ValueKind == JsonValueKind.String)
-                        {
-                            var message = property.Value.GetString();
-                            if (!string.IsNullOrWhiteSpace(message))
-                            {
-                                return message;
-                            }
-                        }
-                    }
-                }
-
-                if (document.RootElement.ValueKind == JsonValueKind.String)
-                {
-                    var rootMessage = document.RootElement.GetString();
-                    if (!string.IsNullOrWhiteSpace(rootMessage))
-                    {
-                        return rootMessage;
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Fall through to plain text handling
-            }
-        }
-
-        return trimmed.Length > 512 ? trimmed[..512] : trimmed;
+        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
     }
 
     private HttpClient CreateHttpClient(GatewaySettings tenant)
@@ -815,13 +677,7 @@ public sealed class SepidarAuthService : ISepidarAuth
     private void PrepareHeaders(HttpRequestHeaders headers, GatewaySettings tenant, string token)
     {
         headers.TryAddWithoutValidation("GenerationVersion", tenant.Sepidar.GenerationVersion);
-        var integrationId = (tenant.Sepidar.IntegrationId ?? string.Empty).Trim();
-        if (string.IsNullOrEmpty(integrationId))
-        {
-            throw new InvalidOperationException("Integration ID is not configured.");
-        }
-
-        headers.TryAddWithoutValidation("IntegrationID", integrationId);
+        headers.TryAddWithoutValidation("IntegrationID", tenant.Sepidar.IntegrationId);
 
         if (!string.IsNullOrWhiteSpace(tenant.Sepidar.ApiVersion))
         {
@@ -902,19 +758,13 @@ public sealed class SepidarAuthService : ISepidarAuth
 
                 var cypher = ReadElement(root, "Cypher");
                 var iv = ReadElement(root, "IV");
-                var deviceTitle = ReadElement(root, "DeviceTitle");
 
                 if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
                 {
                     return null;
                 }
 
-                return new RegisterResponse
-                {
-                    Cypher = cypher.Trim(),
-                    IV = iv.Trim(),
-                    DeviceTitle = string.IsNullOrWhiteSpace(deviceTitle) ? null : deviceTitle.Trim()
-                };
+                return new RegisterResponse(cypher.Trim(), iv.Trim());
             }
             catch (Exception ex) when (ex is XmlException or InvalidOperationException)
             {
@@ -932,13 +782,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    private sealed class RegisterResponse
-    {
-        public string Cypher { get; set; } = string.Empty;
-        public string IV { get; set; } = string.Empty;
-        public string? DeviceTitle { get; set; }
-            = null;
-    }
+    private sealed record RegisterResponse(string Cypher, string IV);
 
     private static RegisterCryptoResponse? ParseRegisterCryptoResponse(string payload)
     {
@@ -1022,6 +866,31 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? RsaExponentBase64 { get; set; }
     }
 
+    private static DeviceLoginResponseDto MapLoginResult(LoginResult loginResult)
+    {
+        var Response = loginResult.Response;
+        return new DeviceLoginResponseDto
+        {
+            Token = Response.Token,
+            ExpiresIn = loginResult.ExpiresInSeconds,
+            ExpiresAt = loginResult.ExpiresAt,
+            UserId = Response.UserID,
+            UserName = Response.UserName,
+            Title = Response.Title,
+            CanEditCustomer = Response.CanEditCustomer,
+            CanRegisterCustomer = Response.CanRegisterCustomer,
+            CanRegisterOrder = Response.CanRegisterOrder,
+            CanRegisterReturnOrder = Response.CanRegisterReturnOrder,
+            CanRegisterInvoice = Response.CanRegisterInvoice,
+            CanRegisterReturnInvoice = Response.CanRegisterReturnInvoice,
+            CanPrintInvoice = Response.CanPrintInvoice,
+            CanPrintReturnInvoice = Response.CanPrintReturnInvoice,
+            CanPrintInvoiceBeforeSend = Response.CanPrintInvoiceBeforeSend,
+            CanPrintReturnInvoiceBeforeSend = Response.CanPrintReturnInvoiceBeforeSend,
+            CanRevokeInvoice = Response.CanRevokeInvoice
+        };
+    }
+
     private sealed record LoginResponse
     {
         public string Token { get; set; } = string.Empty;
@@ -1042,7 +911,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         public bool CanRevokeInvoice { get; set; }
     }
 
-    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds, DeviceLoginRawResponse RawResponse)
+    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds)
     {
         public string Token => Response.Token;
     }
@@ -1055,96 +924,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? Token { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
         public DateTimeOffset LastAuthorizationCheck { get; set; } = DateTimeOffset.MinValue;
-        public RegisterCacheEntry? RegisterCacheEntry { get; set; }
-        public DateTimeOffset RegisterExpiresAt { get; set; } = DateTimeOffset.MinValue;
-    }
-
-    private void UpdateRegisterCache(AuthState authState, RegisterDeviceRawResponse response, RegisterCacheEntry? cacheEntry)
-    {
-        authState.Registered = true;
-        authState.LastRegisterResponse = response;
-        authState.RegisterCacheEntry = cacheEntry;
-        authState.RegisterExpiresAt = DateTimeOffset.UtcNow.Add(RegisterCacheLifetime);
-        authState.Token = null;
-        authState.ExpiresAt = DateTimeOffset.MinValue;
-        authState.LastAuthorizationCheck = DateTimeOffset.MinValue;
-    }
-
-    private sealed class RegisterCacheEntry
-    {
-        public string Cypher { get; set; } = string.Empty;
-        public string IV { get; set; } = string.Empty;
-        public string? DeviceTitle { get; set; }
-            = null;
-        public DateTimeOffset CachedAt { get; set; } = DateTimeOffset.MinValue;
-    }
-
-    private async Task PrimeRegisterCacheAsync(
-        GatewaySettings tenant,
-        RegisterPayloadSnapshot snapshot,
-        CancellationToken cancellationToken)
-    {
-        var cypher = snapshot.Cypher?.Trim();
-        var iv = snapshot.IV?.Trim();
-
-        if (string.IsNullOrEmpty(cypher) || string.IsNullOrEmpty(iv))
-        {
-            return;
-        }
-
-        var deviceSerial = tenant.Sepidar.DeviceSerial?.Trim();
-        if (string.IsNullOrWhiteSpace(deviceSerial))
-        {
-            throw new InvalidOperationException("Device serial is required to apply register payload overrides.");
-        }
-
-        var deviceTitle = string.IsNullOrWhiteSpace(snapshot.DeviceTitle)
-            ? null
-            : snapshot.DeviceTitle.Trim();
-
-        var authState = _state;
-        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var registerBody = JsonSerializer.Serialize(new
-            {
-                Cypher = cypher,
-                IV = iv,
-                DeviceTitle = deviceTitle
-            }, PreserveNamesOptions);
-
-            var rawResponse = new RegisterDeviceRawResponse(
-                registerBody,
-                "application/json",
-                StatusCodes.Status200OK);
-
-            var plainText = _crypto.DecryptRegisterPayload(deviceSerial, cypher, iv);
-            var tenantCrypto = ParseRegisterCryptoResponse(plainText)
-                               ?? throw new InvalidOperationException("Invalid register payload override.");
-
-            tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
-            tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
-            tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
-
-            if (!string.IsNullOrWhiteSpace(deviceTitle))
-            {
-                tenant.Sepidar.DeviceTitle = deviceTitle;
-            }
-
-            var cacheEntry = new RegisterCacheEntry
-            {
-                Cypher = cypher,
-                IV = iv,
-                DeviceTitle = deviceTitle,
-                CachedAt = DateTimeOffset.UtcNow
-            };
-
-            UpdateRegisterCache(authState, rawResponse, cacheEntry);
-        }
-        finally
-        {
-            authState.Lock.Release();
-        }
     }
 
     private static bool HasRsaConfigured(CryptoOptions crypto)

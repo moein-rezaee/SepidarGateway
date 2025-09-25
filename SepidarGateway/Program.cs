@@ -29,8 +29,6 @@ builder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
 builder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
 builder.Services.AddSingleton<SepidarHeaderHandler>();
 builder.Services.AddSingleton<ISepidarGatewayService, SepidarGatewayService>();
-builder.Services.AddSingleton<IRegisterPayloadCache, InMemoryRegisterPayloadCache>();
-builder.Services.AddMemoryCache();
 
 builder.Services.AddHttpContextAccessor();
 
@@ -200,44 +198,10 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
     .WithTags("SepidarGateway")
     .WithSummary("Register Sepidar device using configured credentials");
 
-    group.MapPost("/Login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
+    group.MapPost("/Login", async (ISepidarGatewayService service, CancellationToken ct) =>
     {
-        try
-        {
-            var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
-            var statusCode = response.StatusCode == 0 ? StatusCodes.Status200OK : response.StatusCode;
-
-            if (string.IsNullOrEmpty(response.Body))
-            {
-                return Results.StatusCode(statusCode);
-            }
-
-            var contentType = string.IsNullOrWhiteSpace(response.ContentType)
-                ? "application/json"
-                : response.ContentType;
-
-            return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
-        }
-        catch (AuthenticationFailedException ex)
-        {
-            var response = ex.Response ?? DeviceLoginRawResponse.Empty;
-            var statusCode = response.StatusCode == 0 ? StatusCodes.Status401Unauthorized : response.StatusCode;
-
-            if (string.IsNullOrEmpty(response.Body))
-            {
-                return Results.Json(new { error = ex.Message }, statusCode: statusCode);
-            }
-
-            var contentType = string.IsNullOrWhiteSpace(response.ContentType)
-                ? "application/json"
-                : response.ContentType;
-
-            return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Results.BadRequest(new { error = ex.Message });
-        }
+        var response = await service.LoginAsync(ct).ConfigureAwait(false);
+        return Results.Ok(response);
     })
     .WithTags("SepidarGateway")
     .WithSummary("Login to Sepidar and return token details");
