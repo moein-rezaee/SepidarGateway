@@ -14,7 +14,7 @@ public interface ISepidarGatewayService
 {
     Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
 
-    Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
+    Task<DeviceLoginResponseDto> LoginAsync(CancellationToken cancellationToken);
 
     Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken);
 
@@ -101,17 +101,11 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
+    public async Task<DeviceLoginResponseDto> LoginAsync(CancellationToken cancellationToken)
     {
-        if (request is null)
-        {
-            throw new ArgumentNullException(nameof(request));
-        }
-
         var settings = GetSettings();
-        ApplyLoginOverrides(settings, request);
         NormalizeTenantSettings(settings);
-        return await _auth.LoginAsync(settings, request, cancellationToken).ConfigureAwait(false);
+        return await _auth.LoginAsync(settings, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken)
@@ -217,34 +211,6 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         return builder.ToString();
-    }
-
-    private static void ApplyLoginOverrides(GatewaySettings settings, DeviceLoginRequestDto request)
-    {
-        if (!string.IsNullOrWhiteSpace(request.UserName))
-        {
-            settings.Credentials.UserName = request.UserName.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Password))
-        {
-            settings.Credentials.Password = request.Password.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.IntegrationId))
-        {
-            settings.Sepidar.IntegrationId = NormalizeIdentifier(request.IntegrationId);
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.GenerationVersion))
-        {
-            settings.Sepidar.GenerationVersion = NormalizeIdentifier(request.GenerationVersion);
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
-        {
-            settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
-        }
     }
 
     private static string DeriveIntegrationId(string serial)

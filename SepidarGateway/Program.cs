@@ -202,11 +202,11 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
     .WithTags("SepidarGateway")
     .WithSummary("Register Sepidar device using configured credentials");
 
-    group.MapPost("/Login", async (DeviceLoginRequestDto request, ISepidarGatewayService service, CancellationToken ct) =>
+    group.MapPost("/Login", async (ISepidarGatewayService service, CancellationToken ct) =>
     {
         try
         {
-            var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
+            var response = await service.LoginAsync(ct).ConfigureAwait(false);
             return Results.Ok(response);
         }
         catch (SepidarAuthenticationException authEx)

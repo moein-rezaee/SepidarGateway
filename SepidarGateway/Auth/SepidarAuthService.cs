@@ -43,69 +43,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         _logger = logger;
     }
 
-    private async Task ApplyLoginOverridesAsync(GatewaySettings tenant, DeviceLoginRequestDto? request, CancellationToken cancellationToken)
-    {
-        if (request is null)
-        {
-            return;
-        }
-
-        var authState = _state;
-        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
-            {
-                tenant.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.IntegrationId))
-            {
-                tenant.Sepidar.IntegrationId = request.IntegrationId.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.GenerationVersion))
-            {
-                tenant.Sepidar.GenerationVersion = request.GenerationVersion.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.UserName))
-            {
-                tenant.Credentials.UserName = request.UserName.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.Password))
-            {
-                tenant.Credentials.Password = request.Password.Trim();
-            }
-
-            if (request.RegisterPayload is { } payload)
-            {
-                if (!string.IsNullOrWhiteSpace(payload.DeviceTitle))
-                {
-                    tenant.Sepidar.DeviceTitle = payload.DeviceTitle.Trim();
-                }
-
-                if (!string.IsNullOrWhiteSpace(payload.Cypher) && !string.IsNullOrWhiteSpace(payload.Iv))
-                {
-                    ApplyRegisterPayload(tenant, payload.Cypher.Trim(), payload.Iv.Trim(), payload.DeviceTitle);
-                    authState.Registered = true;
-                    authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
-                    return;
-                }
-            }
-
-            if (HasRsaConfigured(tenant.Crypto))
-            {
-                EnsureSnapshotFromTenant(tenant);
-            }
-        }
-        finally
-        {
-            authState.Lock.Release();
-        }
-    }
-
     public async Task EnsureDeviceRegisteredAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         var authState = _state;
@@ -219,9 +156,8 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, DeviceLoginRequestDto? request, CancellationToken cancellationToken)
+    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
-        await ApplyLoginOverridesAsync(tenant, request, cancellationToken).ConfigureAwait(false);
         var authState = _state;
         await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
 
