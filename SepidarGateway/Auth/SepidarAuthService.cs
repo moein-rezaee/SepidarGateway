@@ -10,7 +10,6 @@ using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
 using SepidarGateway.Configuration;
-using SepidarGateway.Contracts;
 using SepidarGateway.Crypto;
 
 namespace SepidarGateway.Auth;
@@ -125,7 +124,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    public async Task<DeviceLoginRawResponse> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         var authState = _state;
         await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
@@ -136,7 +135,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             var LoginResult = await LoginInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
             authState.Token = LoginResult.Token;
             authState.ExpiresAt = LoginResult.ExpiresAt;
-            return MapLoginResult(LoginResult);
+            return LoginResult.RawResponse;
         }
         finally
         {
@@ -556,22 +555,26 @@ public sealed class SepidarAuthService : ISepidarAuth
             throw new InvalidOperationException("Generation version mismatch");
         }
 
+        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var ContentType = LoginResponseMessage.Content.Headers.ContentType?.ToString();
+
         if (LoginResponseMessage.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            var errorBody = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var errorMessage = ExtractLoginErrorMessage(errorBody, LoginResponseMessage.StatusCode);
-            throw new AuthenticationFailedException(errorMessage);
+            var errorMessage = ExtractLoginErrorMessage(ResponseContent, LoginResponseMessage.StatusCode);
+            var rawError = new DeviceLoginRawResponse(ResponseContent, ContentType, (int)LoginResponseMessage.StatusCode);
+            throw new AuthenticationFailedException(errorMessage, rawError);
         }
 
         LoginResponseMessage.EnsureSuccessStatusCode();
-        var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var LoginResponse = JsonSerializer.Deserialize<LoginResponse>(ResponseContent, SerializerOptions)
                            ?? throw new InvalidOperationException("Invalid login response");
 
         var ExpiresInSeconds = LoginResponse.ExpiresIn > 0 ? LoginResponse.ExpiresIn : tenant.Jwt.CacheSeconds;
         var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
-        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
+        var rawSuccess = new DeviceLoginRawResponse(ResponseContent, ContentType, (int)LoginResponseMessage.StatusCode);
+
+        return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds, rawSuccess);
     }
 
     private static string ExtractLoginErrorMessage(string? responseBody, HttpStatusCode statusCode)
@@ -932,31 +935,6 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? RsaExponentBase64 { get; set; }
     }
 
-    private static DeviceLoginResponseDto MapLoginResult(LoginResult loginResult)
-    {
-        var Response = loginResult.Response;
-        return new DeviceLoginResponseDto
-        {
-            Token = Response.Token,
-            ExpiresIn = loginResult.ExpiresInSeconds,
-            ExpiresAt = loginResult.ExpiresAt,
-            UserId = Response.UserID,
-            UserName = Response.UserName,
-            Title = Response.Title,
-            CanEditCustomer = Response.CanEditCustomer,
-            CanRegisterCustomer = Response.CanRegisterCustomer,
-            CanRegisterOrder = Response.CanRegisterOrder,
-            CanRegisterReturnOrder = Response.CanRegisterReturnOrder,
-            CanRegisterInvoice = Response.CanRegisterInvoice,
-            CanRegisterReturnInvoice = Response.CanRegisterReturnInvoice,
-            CanPrintInvoice = Response.CanPrintInvoice,
-            CanPrintReturnInvoice = Response.CanPrintReturnInvoice,
-            CanPrintInvoiceBeforeSend = Response.CanPrintInvoiceBeforeSend,
-            CanPrintReturnInvoiceBeforeSend = Response.CanPrintReturnInvoiceBeforeSend,
-            CanRevokeInvoice = Response.CanRevokeInvoice
-        };
-    }
-
     private sealed record LoginResponse
     {
         public string Token { get; set; } = string.Empty;
@@ -977,7 +955,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         public bool CanRevokeInvoice { get; set; }
     }
 
-    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds)
+    private sealed record LoginResult(LoginResponse Response, DateTimeOffset ExpiresAt, int ExpiresInSeconds, DeviceLoginRawResponse RawResponse)
     {
         public string Token => Response.Token;
     }

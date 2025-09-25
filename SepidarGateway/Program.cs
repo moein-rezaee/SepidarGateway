@@ -203,11 +203,34 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
         try
         {
             var response = await service.LoginAsync(request, ct).ConfigureAwait(false);
-            return Results.Ok(response);
+            var statusCode = response.StatusCode == 0 ? StatusCodes.Status200OK : response.StatusCode;
+
+            if (string.IsNullOrEmpty(response.Body))
+            {
+                return Results.StatusCode(statusCode);
+            }
+
+            var contentType = string.IsNullOrWhiteSpace(response.ContentType)
+                ? "application/json"
+                : response.ContentType;
+
+            return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
         }
         catch (AuthenticationFailedException ex)
         {
-            return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status401Unauthorized);
+            var response = ex.Response ?? DeviceLoginRawResponse.Empty;
+            var statusCode = response.StatusCode == 0 ? StatusCodes.Status401Unauthorized : response.StatusCode;
+
+            if (string.IsNullOrEmpty(response.Body))
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: statusCode);
+            }
+
+            var contentType = string.IsNullOrWhiteSpace(response.ContentType)
+                ? "application/json"
+                : response.ContentType;
+
+            return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
         }
     })
     .WithTags("SepidarGateway")

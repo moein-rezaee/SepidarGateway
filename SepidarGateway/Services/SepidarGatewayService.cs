@@ -13,7 +13,7 @@ public interface ISepidarGatewayService
 {
     Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
 
-    Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
+    Task<DeviceLoginRawResponse> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
 
     Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken);
 
@@ -92,7 +92,7 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
+    public async Task<DeviceLoginRawResponse> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
     {
         if (request is null)
         {
