@@ -153,12 +153,6 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
         OverrideCredentialsFromEnvironment(settings);
 
-        settings.Sepidar.DeviceSerial = settings.Sepidar.DeviceSerial?.Trim() ?? string.Empty;
-        if (string.IsNullOrEmpty(settings.Sepidar.DeviceSerial))
-        {
-            throw new InvalidOperationException("Sepidar deviceSerial is not configured.");
-        }
-
         settings.Sepidar.GenerationVersion = NormalizeIdentifier(settings.Sepidar.GenerationVersion);
         if (string.IsNullOrEmpty(settings.Sepidar.GenerationVersion))
         {

@@ -21,6 +21,7 @@ public sealed class SepidarAuthService : ISepidarAuth
     private readonly ISepidarCrypto _crypto;
     private readonly ILogger<SepidarAuthService> _logger;
     private readonly AuthState _state = new();
+    private static readonly TimeSpan RegistrationCacheDuration = TimeSpan.FromMinutes(2);
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -44,8 +45,16 @@ public sealed class SepidarAuthService : ISepidarAuth
     public async Task EnsureDeviceRegisteredAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         var authState = _state;
+        if (TryApplyCachedRegistration(tenant))
+        {
+            authState.Registered = true;
+            authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
+            return;
+        }
+
         if (!authState.Registered && HasRsaConfigured(tenant.Crypto))
         {
+            EnsureSnapshotFromTenant(tenant);
             authState.Registered = true;
             authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
             return;
@@ -59,6 +68,13 @@ public sealed class SepidarAuthService : ISepidarAuth
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (TryApplyCachedRegistration(tenant))
+            {
+                authState.Registered = true;
+                authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
+                return;
+            }
+
             if (authState.Registered)
             {
                 return;
@@ -66,6 +82,7 @@ public sealed class SepidarAuthService : ISepidarAuth
 
             if (HasRsaConfigured(tenant.Crypto))
             {
+                EnsureSnapshotFromTenant(tenant);
                 authState.Registered = true;
                 authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
                 return;
@@ -230,6 +247,112 @@ public sealed class SepidarAuthService : ISepidarAuth
         authState.Token = null;
         authState.ExpiresAt = DateTimeOffset.MinValue;
         authState.LastAuthorizationCheck = DateTimeOffset.MinValue;
+    }
+
+    private bool TryApplyCachedRegistration(GatewaySettings tenant)
+    {
+        var authState = _state;
+        var snapshot = authState.RegisterSnapshot;
+        if (snapshot is null)
+        {
+            return false;
+        }
+
+        if (snapshot.IsExpired(DateTimeOffset.UtcNow, RegistrationCacheDuration))
+        {
+            authState.RegisterSnapshot = null;
+            authState.Registered = false;
+            authState.LastRegisterResponse = null;
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.DeviceSerial))
+        {
+            tenant.Sepidar.DeviceSerial = snapshot.DeviceSerial;
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.IntegrationId))
+        {
+            tenant.Sepidar.IntegrationId = snapshot.IntegrationId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.GenerationVersion))
+        {
+            tenant.Sepidar.GenerationVersion = snapshot.GenerationVersion;
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.DeviceTitle))
+        {
+            tenant.Sepidar.DeviceTitle = snapshot.DeviceTitle;
+        }
+
+        tenant.Crypto.RsaPublicKeyXml = snapshot.Crypto.RsaPublicKeyXml;
+        tenant.Crypto.RsaModulusBase64 = snapshot.Crypto.RsaModulusBase64;
+        tenant.Crypto.RsaExponentBase64 = snapshot.Crypto.RsaExponentBase64;
+
+        return true;
+    }
+
+    private void EnsureSnapshotFromTenant(GatewaySettings tenant)
+    {
+        var authState = _state;
+        if (authState.RegisterSnapshot is not null)
+        {
+            return;
+        }
+
+        var snapshot = new RegisteredDeviceSnapshot(
+            TrimOrEmpty(tenant.Sepidar.DeviceSerial),
+            TrimOrEmpty(tenant.Sepidar.IntegrationId),
+            TrimOrEmpty(tenant.Sepidar.GenerationVersion),
+            CloneCryptoOptions(tenant.Crypto),
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            TrimOrNull(tenant.Sepidar.DeviceTitle));
+
+        authState.RegisterSnapshot = snapshot;
+    }
+
+    private void CacheRegistrationSnapshot(GatewaySettings tenant, RegisterResponse registerPayload)
+    {
+        var snapshot = new RegisteredDeviceSnapshot(
+            TrimOrEmpty(tenant.Sepidar.DeviceSerial),
+            TrimOrEmpty(tenant.Sepidar.IntegrationId),
+            TrimOrEmpty(tenant.Sepidar.GenerationVersion),
+            CloneCryptoOptions(tenant.Crypto),
+            DateTimeOffset.UtcNow,
+            registerPayload.Cypher,
+            registerPayload.IV,
+            TrimOrNull(registerPayload.DeviceTitle));
+
+        var authState = _state;
+        authState.RegisterSnapshot = snapshot;
+
+        if (!string.IsNullOrWhiteSpace(registerPayload.DeviceTitle))
+        {
+            tenant.Sepidar.DeviceTitle = registerPayload.DeviceTitle.Trim();
+        }
+    }
+
+    private static CryptoOptions CloneCryptoOptions(CryptoOptions source)
+    {
+        return new CryptoOptions
+        {
+            RsaPublicKeyXml = source.RsaPublicKeyXml,
+            RsaModulusBase64 = source.RsaModulusBase64,
+            RsaExponentBase64 = source.RsaExponentBase64
+        };
+    }
+
+    private static string TrimOrEmpty(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+    }
+
+    private static string? TrimOrNull(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private async Task<RegisterDeviceRawResponse> RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
@@ -520,6 +643,8 @@ public sealed class SepidarAuthService : ISepidarAuth
             tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
             tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
 
+            CacheRegistrationSnapshot(tenant, registerPayload);
+
             return new RegisterAttemptResult(registerPath, rawResponse, Success: true);
         }
     }
@@ -529,6 +654,11 @@ public sealed class SepidarAuthService : ISepidarAuth
     private async Task<LoginResult> LoginInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Logging in gateway {Gateway}", tenant.Name);
+        if (!TryApplyCachedRegistration(tenant) && !HasRsaConfigured(tenant.Crypto))
+        {
+            throw new InvalidOperationException("Sepidar device is not registered. Call /Device/Register before logging in.");
+        }
+
         var HttpClient = CreateHttpClient(tenant);
         var ArbitraryCode = Guid.NewGuid().ToString();
         var EncryptedCode = _crypto.EncryptArbitraryCode(ArbitraryCode, tenant.Crypto);
@@ -788,13 +918,14 @@ public sealed class SepidarAuthService : ISepidarAuth
 
                 var cypher = ReadElement(root, "Cypher");
                 var iv = ReadElement(root, "IV");
+                var title = ReadElement(root, "DeviceTitle");
 
                 if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
                 {
                     return null;
                 }
 
-                return new RegisterResponse(cypher.Trim(), iv.Trim());
+                return new RegisterResponse(cypher.Trim(), iv.Trim(), TrimOrNull(title));
             }
             catch (Exception ex) when (ex is XmlException or InvalidOperationException)
             {
@@ -812,7 +943,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    private sealed record RegisterResponse(string Cypher, string IV);
+    private sealed record RegisterResponse(string Cypher, string IV, string? DeviceTitle);
 
     private static RegisterCryptoResponse? ParseRegisterCryptoResponse(string payload)
     {
@@ -994,6 +1125,23 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? Token { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
         public DateTimeOffset LastAuthorizationCheck { get; set; } = DateTimeOffset.MinValue;
+        public RegisteredDeviceSnapshot? RegisterSnapshot { get; set; }
+    }
+
+    private sealed record RegisteredDeviceSnapshot(
+        string DeviceSerial,
+        string IntegrationId,
+        string GenerationVersion,
+        CryptoOptions Crypto,
+        DateTimeOffset CachedAt,
+        string? Cypher,
+        string? Iv,
+        string? DeviceTitle)
+    {
+        public bool IsExpired(DateTimeOffset now, TimeSpan lifetime)
+        {
+            return CachedAt + lifetime < now;
+        }
     }
 
     private static bool HasRsaConfigured(CryptoOptions crypto)

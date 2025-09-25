@@ -36,8 +36,7 @@ public class SepidarOptions
     [Required]
     public string IntegrationId { get; set; } = string.Empty;
 
-    [Required]
-    public string DeviceSerial { get; set; } = string.Empty;
+    public string? DeviceSerial { get; set; }
 
     [Required]
     public string GenerationVersion { get; set; } = string.Empty;
