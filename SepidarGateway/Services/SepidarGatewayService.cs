@@ -100,6 +100,12 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         var settings = GetSettings();
+
+        if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
+        {
+            settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(request.UserName))
         {
             settings.Credentials.UserName = request.UserName.Trim();
@@ -110,7 +116,46 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             settings.Credentials.Password = request.Password.Trim();
         }
 
-        return await _auth.LoginAsync(settings, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(request.GenerationVersion))
+        {
+            settings.Sepidar.GenerationVersion = request.GenerationVersion.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.IntegrationId))
+        {
+            settings.Sepidar.IntegrationId = request.IntegrationId.Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(settings.Sepidar.DeviceSerial))
+        {
+            settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
+        }
+
+        RegisterPayloadSnapshot? registerSnapshot = null;
+        if (request.RegisterPayload is { } registerPayload)
+        {
+            var cypher = registerPayload.Cypher?.Trim();
+            var iv = registerPayload.Iv?.Trim();
+            var deviceTitle = string.IsNullOrWhiteSpace(registerPayload.DeviceTitle)
+                ? null
+                : registerPayload.DeviceTitle.Trim();
+
+            if (!string.IsNullOrWhiteSpace(deviceTitle))
+            {
+                settings.Sepidar.DeviceTitle = deviceTitle;
+            }
+
+            if (!string.IsNullOrEmpty(cypher) && !string.IsNullOrEmpty(iv))
+            {
+                registerSnapshot = new RegisterPayloadSnapshot
+                {
+                    Cypher = cypher,
+                    IV = iv,
+                    DeviceTitle = deviceTitle
+                };
+            }
+        }
+
+        return await _auth.LoginAsync(settings, registerSnapshot, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken)

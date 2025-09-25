@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
+using Microsoft.AspNetCore.Http;
 using SepidarGateway.Configuration;
 using SepidarGateway.Crypto;
 
@@ -142,10 +143,19 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    public async Task<DeviceLoginRawResponse> LoginAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    public async Task<DeviceLoginRawResponse> LoginAsync(
+        GatewaySettings tenant,
+        RegisterPayloadSnapshot? registerPayload,
+        CancellationToken cancellationToken)
     {
-        var authState = _state;
+        if (registerPayload is not null)
+        {
+            await PrimeRegisterCacheAsync(tenant, registerPayload, cancellationToken).ConfigureAwait(false);
+        }
+
         await EnsureDeviceRegisteredAsync(tenant, cancellationToken).ConfigureAwait(false);
+
+        var authState = _state;
 
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1053,6 +1063,74 @@ public sealed class SepidarAuthService : ISepidarAuth
         public string? DeviceTitle { get; set; }
             = null;
         public DateTimeOffset CachedAt { get; set; } = DateTimeOffset.MinValue;
+    }
+
+    private async Task PrimeRegisterCacheAsync(
+        GatewaySettings tenant,
+        RegisterPayloadSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        var cypher = snapshot.Cypher?.Trim();
+        var iv = snapshot.IV?.Trim();
+
+        if (string.IsNullOrEmpty(cypher) || string.IsNullOrEmpty(iv))
+        {
+            return;
+        }
+
+        var deviceSerial = tenant.Sepidar.DeviceSerial?.Trim();
+        if (string.IsNullOrWhiteSpace(deviceSerial))
+        {
+            throw new InvalidOperationException("Device serial is required to apply register payload overrides.");
+        }
+
+        var deviceTitle = string.IsNullOrWhiteSpace(snapshot.DeviceTitle)
+            ? null
+            : snapshot.DeviceTitle.Trim();
+
+        var authState = _state;
+        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var registerBody = JsonSerializer.Serialize(new
+            {
+                Cypher = cypher,
+                IV = iv,
+                DeviceTitle = deviceTitle
+            }, PreserveNamesOptions);
+
+            var rawResponse = new RegisterDeviceRawResponse(
+                registerBody,
+                "application/json",
+                StatusCodes.Status200OK);
+
+            var plainText = _crypto.DecryptRegisterPayload(deviceSerial, cypher, iv);
+            var tenantCrypto = ParseRegisterCryptoResponse(plainText)
+                               ?? throw new InvalidOperationException("Invalid register payload override.");
+
+            tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
+            tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
+            tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
+
+            if (!string.IsNullOrWhiteSpace(deviceTitle))
+            {
+                tenant.Sepidar.DeviceTitle = deviceTitle;
+            }
+
+            var cacheEntry = new RegisterCacheEntry
+            {
+                Cypher = cypher,
+                IV = iv,
+                DeviceTitle = deviceTitle,
+                CachedAt = DateTimeOffset.UtcNow
+            };
+
+            UpdateRegisterCache(authState, rawResponse, cacheEntry);
+        }
+        finally
+        {
+            authState.Lock.Release();
+        }
     }
 
     private static bool HasRsaConfigured(CryptoOptions crypto)
