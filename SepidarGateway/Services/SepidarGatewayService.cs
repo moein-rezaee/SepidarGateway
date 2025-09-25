@@ -1,7 +1,10 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using SepidarGateway.Auth;
 using SepidarGateway.Configuration;
@@ -23,6 +26,7 @@ public interface ISepidarGatewayService
 public sealed class SepidarGatewayService : ISepidarGatewayService
 {
     public const string ProxyClientName = "SepidarProxy";
+    private static readonly TimeSpan RegisterCacheLifetime = TimeSpan.FromMinutes(2);
 
     private static readonly string[] HopByHopResponseHeaders =
     [
@@ -40,17 +44,23 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
     private readonly ISepidarAuth _auth;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<SepidarGatewayService> _logger;
+    private readonly IConfiguration _configuration;
+    private readonly IRegisterPayloadCache _registerCache;
 
     public SepidarGatewayService(
         IOptionsMonitor<GatewayOptions> optionsMonitor,
         ISepidarAuth auth,
         IHttpClientFactory httpClientFactory,
-        ILogger<SepidarGatewayService> logger)
+        ILogger<SepidarGatewayService> logger,
+        IConfiguration configuration,
+        IRegisterPayloadCache registerCache)
     {
         _optionsMonitor = optionsMonitor;
         _auth = auth;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _configuration = configuration;
+        _registerCache = registerCache;
     }
 
     public async Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken)
@@ -78,15 +88,24 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
 
         try
         {
-            return await _auth.RegisterDeviceAsync(settings, cancellationToken).ConfigureAwait(false);
+            var response = await _auth.RegisterDeviceAsync(settings, cancellationToken).ConfigureAwait(false);
+
+            if (!TryCacheRegisterPayload(settings, response))
+            {
+                _registerCache.Clear();
+            }
+
+            return response;
         }
         catch (RegisterDeviceFailedException ex)
         {
+            _registerCache.Clear();
             _logger.LogWarning(ex, "Sepidar register returned status {StatusCode} for device {DeviceSerial}", ex.Response.StatusCode, settings.Sepidar.DeviceSerial);
             return ex.Response;
         }
         catch (Exception ex)
         {
+            _registerCache.Clear();
             _logger.LogError(ex, "Failed to register Sepidar device");
             throw;
         }
@@ -100,62 +119,84 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         var settings = GetSettings();
+        ApplyConfiguredValues(settings);
+
+        RegisterPayloadSnapshot? registerSnapshot;
+        string? cachedSerial = settings.Sepidar.DeviceSerial?.Trim();
+
+        if (_registerCache.TryGet(out var cachedEntry) && cachedEntry is not null)
+        {
+            cachedSerial = string.IsNullOrWhiteSpace(cachedEntry.DeviceSerial)
+                ? cachedSerial
+                : cachedEntry.DeviceSerial.Trim();
+
+            if (!string.IsNullOrWhiteSpace(cachedEntry.DeviceTitle))
+            {
+                settings.Sepidar.DeviceTitle = cachedEntry.DeviceTitle;
+            }
+
+            registerSnapshot = new RegisterPayloadSnapshot
+            {
+                Cypher = cachedEntry.Cypher,
+                IV = cachedEntry.IV,
+                DeviceTitle = cachedEntry.DeviceTitle
+            };
+        }
+        else
+        {
+            _logger.LogWarning("Register payload cache is empty before login for gateway {Gateway}", settings.Name);
+            throw new InvalidOperationException("Register payload cache is empty. Please register the device again before logging in.");
+        }
 
         if (!string.IsNullOrWhiteSpace(request.DeviceSerial))
         {
-            settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
+            cachedSerial = request.DeviceSerial.Trim();
         }
 
-        if (!string.IsNullOrWhiteSpace(request.UserName))
+        if (!string.IsNullOrWhiteSpace(cachedSerial))
         {
-            settings.Credentials.UserName = request.UserName.Trim();
+            settings.Sepidar.DeviceSerial = cachedSerial;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Password))
+        if (string.IsNullOrWhiteSpace(settings.Credentials.UserName))
         {
-            settings.Credentials.Password = request.Password.Trim();
+            throw new InvalidOperationException("Sepidar username is not configured in the environment.");
         }
 
-        if (!string.IsNullOrWhiteSpace(request.GenerationVersion))
+        if (string.IsNullOrWhiteSpace(settings.Credentials.Password))
         {
-            settings.Sepidar.GenerationVersion = request.GenerationVersion.Trim();
+            throw new InvalidOperationException("Sepidar password is not configured in the environment.");
         }
 
-        if (!string.IsNullOrWhiteSpace(request.IntegrationId))
+        if (string.IsNullOrWhiteSpace(settings.Sepidar.IntegrationId))
         {
-            settings.Sepidar.IntegrationId = request.IntegrationId.Trim();
+            throw new InvalidOperationException("Integration ID is not configured in app settings.");
         }
-        else if (!string.IsNullOrWhiteSpace(settings.Sepidar.DeviceSerial))
+
+        if (string.IsNullOrWhiteSpace(settings.Sepidar.GenerationVersion))
         {
-            settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
+            throw new InvalidOperationException("Generation version is not configured in app settings.");
         }
 
-        RegisterPayloadSnapshot? registerSnapshot = null;
-        if (request.RegisterPayload is { } registerPayload)
+        if (string.IsNullOrWhiteSpace(settings.Sepidar.DeviceSerial))
         {
-            var cypher = registerPayload.Cypher?.Trim();
-            var iv = registerPayload.Iv?.Trim();
-            var deviceTitle = string.IsNullOrWhiteSpace(registerPayload.DeviceTitle)
-                ? null
-                : registerPayload.DeviceTitle.Trim();
-
-            if (!string.IsNullOrWhiteSpace(deviceTitle))
-            {
-                settings.Sepidar.DeviceTitle = deviceTitle;
-            }
-
-            if (!string.IsNullOrEmpty(cypher) && !string.IsNullOrEmpty(iv))
-            {
-                registerSnapshot = new RegisterPayloadSnapshot
-                {
-                    Cypher = cypher,
-                    IV = iv,
-                    DeviceTitle = deviceTitle
-                };
-            }
+            throw new InvalidOperationException("Device serial is not configured.");
         }
 
-        return await _auth.LoginAsync(settings, registerSnapshot, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _auth.LoginAsync(settings, registerSnapshot, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AuthenticationFailedException)
+        {
+            _registerCache.Clear();
+            throw;
+        }
+        catch
+        {
+            _registerCache.Clear();
+            throw;
+        }
     }
 
     public Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken)
@@ -176,6 +217,201 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         using var responseMessage = await httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
         await CopyResponseAsync(context.Response, responseMessage, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void ApplyConfiguredValues(GatewaySettings settings)
+    {
+        settings.Credentials.UserName = ResolveConfigurationValue(
+                "Gateway:Settings:Credentials:UserName",
+                settings.Credentials.UserName,
+                settings)?.Trim() ?? string.Empty;
+
+        settings.Credentials.Password = ResolveConfigurationValue(
+                "Gateway:Settings:Credentials:Password",
+                settings.Credentials.Password,
+                settings)?.Trim() ?? string.Empty;
+
+        settings.Sepidar.IntegrationId = ResolveConfigurationValue(
+                "Gateway:Settings:Sepidar:IntegrationId",
+                settings.Sepidar.IntegrationId,
+                settings)?.Trim() ?? string.Empty;
+
+        settings.Sepidar.GenerationVersion = ResolveConfigurationValue(
+                "Gateway:Settings:Sepidar:GenerationVersion",
+                settings.Sepidar.GenerationVersion,
+                settings)?.Trim() ?? string.Empty;
+
+        var configuredSerial = ResolveConfigurationValue(
+            "Gateway:Settings:Sepidar:DeviceSerial",
+            settings.Sepidar.DeviceSerial,
+            settings);
+
+        if (!string.IsNullOrWhiteSpace(configuredSerial))
+        {
+            settings.Sepidar.DeviceSerial = configuredSerial.Trim();
+        }
+    }
+
+    private string? ResolveConfigurationValue(string key, string? fallback, GatewaySettings settings)
+    {
+        var value = _configuration[key];
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        var envKey = key.Replace(":", "__", StringComparison.Ordinal);
+        value = Environment.GetEnvironmentVariable(envKey);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.Name))
+        {
+            var normalizedName = settings.Name.Trim();
+            if (!string.IsNullOrEmpty(normalizedName))
+            {
+                var uppercaseName = normalizedName.Replace('-', '_').Replace(' ', '_').ToUpperInvariant();
+                var segments = key.Split(':', StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length >= 3)
+                {
+                    var suffix = string.Join('_', segments.Skip(2).Select(ToEnvToken));
+                    var candidate = $"GW_{uppercaseName}_{suffix}";
+                    value = Environment.GetEnvironmentVariable(candidate);
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value;
+                    }
+                }
+            }
+        }
+
+        return fallback;
+    }
+
+    private static string ToEnvToken(string segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(segment.Length);
+        foreach (var ch in segment)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(char.ToUpperInvariant(ch));
+            }
+            else
+            {
+                builder.Append('_');
+            }
+        }
+
+        var token = builder.ToString().Trim('_');
+        while (token.Contains("__", StringComparison.Ordinal))
+        {
+            token = token.Replace("__", "_", StringComparison.Ordinal);
+        }
+
+        return token;
+    }
+
+    private bool TryCacheRegisterPayload(GatewaySettings settings, RegisterDeviceRawResponse response)
+    {
+        if (response is null || string.IsNullOrWhiteSpace(response.Body))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(response.Body);
+            var root = document.RootElement;
+
+            var cypher = FindStringValue(root, "cypher");
+            var iv = FindStringValue(root, "iv");
+            var deviceTitle = FindStringValue(root, "deviceTitle");
+            var deviceSerial = settings.Sepidar.DeviceSerial?.Trim();
+
+            if (string.IsNullOrWhiteSpace(deviceSerial))
+            {
+                deviceSerial = FindStringValue(root, "deviceSerial")?.Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(cypher) || string.IsNullOrWhiteSpace(iv))
+            {
+                return false;
+            }
+
+            var entry = new RegisterPayloadCacheEntry(
+                deviceSerial ?? string.Empty,
+                cypher.Trim(),
+                iv.Trim(),
+                string.IsNullOrWhiteSpace(deviceTitle) ? null : deviceTitle.Trim());
+
+            _registerCache.Store(entry, RegisterCacheLifetime);
+
+            if (!string.IsNullOrWhiteSpace(entry.DeviceTitle))
+            {
+                settings.Sepidar.DeviceTitle = entry.DeviceTitle;
+            }
+
+            _logger.LogInformation(
+                "Cached register payload for device {DeviceSerial} with lifetime {Lifetime}",
+                entry.DeviceSerial,
+                RegisterCacheLifetime);
+
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse register payload for device {DeviceSerial}", settings.Sepidar.DeviceSerial);
+            return false;
+        }
+    }
+
+    private static string? FindStringValue(JsonElement element, string targetName)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        return property.Value.GetString();
+                    }
+
+                    if (property.Value.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False)
+                    {
+                        return property.Value.GetRawText();
+                    }
+                }
+
+                var nested = FindStringValue(property.Value, targetName);
+                if (!string.IsNullOrWhiteSpace(nested))
+                {
+                    return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var nested = FindStringValue(item, targetName);
+                if (!string.IsNullOrWhiteSpace(nested))
+                {
+                    return nested;
+                }
+            }
+        }
+
+        return null;
     }
 
     private GatewaySettings GetSettings()

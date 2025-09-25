@@ -29,6 +29,8 @@ builder.Services.AddSingleton<ISepidarCrypto, SepidarCryptoService>();
 builder.Services.AddSingleton<ISepidarAuth, SepidarAuthService>();
 builder.Services.AddSingleton<SepidarHeaderHandler>();
 builder.Services.AddSingleton<ISepidarGatewayService, SepidarGatewayService>();
+builder.Services.AddSingleton<IRegisterPayloadCache, InMemoryRegisterPayloadCache>();
+builder.Services.AddMemoryCache();
 
 builder.Services.AddHttpContextAccessor();
 
@@ -231,6 +233,10 @@ static void MapDeviceEndpoints(IEndpointRouteBuilder app, string? versionPrefix)
                 : response.ContentType;
 
             return TypedResults.Content(response.Body, contentType, Encoding.UTF8, statusCode);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
         }
     })
     .WithTags("SepidarGateway")
