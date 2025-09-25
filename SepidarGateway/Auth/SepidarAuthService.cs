@@ -47,6 +47,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         {
             // Assume device already registered when RSA is pre-provisioned via configuration
             authState.Registered = true;
+            authState.LastRegisterResponse ??= RegisterDeviceRawResponse.Empty;
             return;
         }
         if (authState.Registered)
@@ -62,8 +63,31 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return;
             }
 
-            await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
             authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
+        }
+        finally
+        {
+            authState.Lock.Release();
+        }
+    }
+
+    public async Task<RegisterDeviceRawResponse> RegisterDeviceAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    {
+        var authState = _state;
+        await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (authState.Registered && authState.LastRegisterResponse is { } cached)
+            {
+                return cached;
+            }
+
+            var registerResult = await RegisterInternalAsync(tenant, cancellationToken).ConfigureAwait(false);
+            authState.Registered = true;
+            authState.LastRegisterResponse = registerResult;
+            return registerResult;
         }
         finally
         {
@@ -186,7 +210,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         authState.LastAuthorizationCheck = DateTimeOffset.MinValue;
     }
 
-    private async Task RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
+    private async Task<RegisterDeviceRawResponse> RegisterInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Registering Sepidar device for gateway {Gateway}", tenant.Name);
         var HttpClient = CreateHttpClient(tenant);
@@ -282,6 +306,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         var ProcessedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var RegisterQueue = new Queue<string>(EnumerateRegisterPaths(tenant));
         var DiscoveryAttempted = false;
+        RegisterAttemptResult? lastFailure = null;
 
         while (true)
         {
@@ -295,28 +320,31 @@ public sealed class SepidarAuthService : ISepidarAuth
 
                 AttemptedPaths.Add(RegisterPath);
 
-                var success = false;
+                RegisterAttemptResult? registerResult = null;
                 foreach (var body in variantBodies)
                 {
-                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
-                    if (success)
+                    registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: false, cancellationToken).ConfigureAwait(false);
+                    if (registerResult is { Success: true })
                     {
-                        break;
+                        return registerResult.Response;
                     }
 
-                    success = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
-                    if (success)
+                    if (registerResult is not null)
                     {
-                        break;
+                        lastFailure = registerResult;
+                    }
+
+                    registerResult = await AttemptRegisterAsync(HttpClient, tenant, RegisterPath, body, includeApiVersion: true, cancellationToken).ConfigureAwait(false);
+                    if (registerResult is { Success: true })
+                    {
+                        return registerResult.Response;
+                    }
+
+                    if (registerResult is not null)
+                    {
+                        lastFailure = registerResult;
                     }
                 }
-
-                if (!success)
-                {
-                    continue;
-                }
-
-                return;
             }
 
             if (DiscoveryAttempted || tenant.Sepidar.RegisterStrict)
@@ -333,6 +361,13 @@ public sealed class SepidarAuthService : ISepidarAuth
                     RegisterQueue.Enqueue(DiscoveredPath);
                 }
             }
+        }
+
+        if (lastFailure is { } failure)
+        {
+            throw new RegisterDeviceFailedException(
+                failure.Response,
+                $"Register endpoint {failure.Path} returned status code {failure.Response.StatusCode} for gateway {tenant.Name}.");
         }
 
         throw new HttpRequestException($"No register endpoint returned a successful response. Attempted: {string.Join(", ", AttemptedPaths)}");
@@ -395,7 +430,7 @@ public sealed class SepidarAuthService : ISepidarAuth
         }
     }
 
-    private async Task<bool> AttemptRegisterAsync(HttpClient httpClient, GatewaySettings tenant, string registerPath, string requestBody, bool includeApiVersion, CancellationToken cancellationToken)
+    private async Task<RegisterAttemptResult?> AttemptRegisterAsync(HttpClient httpClient, GatewaySettings tenant, string registerPath, string requestBody, bool includeApiVersion, CancellationToken cancellationToken)
     {
         var registerUri = BuildTenantUri(tenant, registerPath, includeApiVersionQuery: includeApiVersion);
         using var registerRequest = new HttpRequestMessage(HttpMethod.Post, registerUri)
@@ -421,54 +456,53 @@ public sealed class SepidarAuthService : ISepidarAuth
                 tenant.Name,
                 registerUri,
                 socketException.SocketErrorCode);
-            return false;
+            return null;
         }
 
         using (response)
         {
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var contentType = response.Content.Headers.ContentType?.ToString();
+            var rawResponse = new RegisterDeviceRawResponse(responseBody, contentType, (int)response.StatusCode);
+
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 _logger.LogWarning("Register endpoint {Path} not found for gateway {Gateway} (URI: {Uri})", registerPath, tenant.Name, registerUri);
-                return false;
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
             if (!response.IsSuccessStatusCode)
             {
-                string snippet = string.Empty;
-                try
-                {
-                    var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                    snippet = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
-                }
-                catch { }
-
+                var snippet = responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody;
                 _logger.LogError("Register endpoint {Path} returned {StatusCode} for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, (int)response.StatusCode, tenant.Name, registerUri, snippet);
-                return false;
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
 
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             var registerPayload = ParseRegisterResponse(responseBody);
             if (registerPayload is null)
             {
-                var snippet = responseBody.Length > 500 ? responseBody.Substring(0, 500) + "..." : responseBody;
+                var snippet = responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody;
                 _logger.LogError("Register endpoint {Path} returned an unrecognized payload for gateway {Gateway}. URI: {Uri}. Body: {Body}", registerPath, tenant.Name, registerUri, snippet);
-                return false;
+                return new RegisterAttemptResult(registerPath, rawResponse, Success: false);
             }
-        var plainText = _crypto.DecryptRegisterPayload(
-            tenant.Sepidar.DeviceSerial ?? string.Empty,
-            registerPayload.Cypher,
-            registerPayload.IV);
 
-        var tenantCrypto = ParseRegisterCryptoResponse(plainText)
-                           ?? throw new InvalidOperationException("Invalid crypto payload");
+            var plainText = _crypto.DecryptRegisterPayload(
+                tenant.Sepidar.DeviceSerial ?? string.Empty,
+                registerPayload.Cypher,
+                registerPayload.IV);
+
+            var tenantCrypto = ParseRegisterCryptoResponse(plainText)
+                               ?? throw new InvalidOperationException("Invalid crypto payload");
 
             tenant.Crypto.RsaPublicKeyXml = tenantCrypto.RsaPublicKeyXml;
             tenant.Crypto.RsaModulusBase64 = tenantCrypto.RsaModulusBase64;
             tenant.Crypto.RsaExponentBase64 = tenantCrypto.RsaExponentBase64;
 
-            return true;
+            return new RegisterAttemptResult(registerPath, rawResponse, Success: true);
         }
     }
+
+    private sealed record RegisterAttemptResult(string Path, RegisterDeviceRawResponse Response, bool Success);
 
     private async Task<LoginResult> LoginInternalAsync(GatewaySettings tenant, CancellationToken cancellationToken)
     {
@@ -886,6 +920,7 @@ public sealed class SepidarAuthService : ISepidarAuth
     {
         public SemaphoreSlim Lock { get; } = new(1, 1);
         public bool Registered { get; set; }
+        public RegisterDeviceRawResponse? LastRegisterResponse { get; set; }
         public string? Token { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
         public DateTimeOffset LastAuthorizationCheck { get; set; } = DateTimeOffset.MinValue;
