@@ -1,5 +1,7 @@
+using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using SepidarGateway.Auth;
@@ -12,7 +14,7 @@ public interface ISepidarGatewayService
 {
     Task<RegisterDeviceRawResponse> RegisterDeviceAsync(DeviceRegisterRequestDto request, CancellationToken cancellationToken);
 
-    Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken);
+    Task<DeviceLoginResponseDto> LoginAsync(CancellationToken cancellationToken);
 
     Task<bool> EnsureAuthorizationAsync(CancellationToken cancellationToken);
 
@@ -66,14 +68,22 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
             throw new InvalidOperationException("Missing 'deviceSerial'");
         }
 
-        settings.Sepidar.DeviceSerial = request.DeviceSerial.Trim();
-        settings.Sepidar.IntegrationId = DeriveIntegrationId(settings.Sepidar.DeviceSerial);
-        settings.Sepidar.RegisterPayloadMode = "IntegrationOnly";
+        var deviceSerial = request.DeviceSerial.Trim();
+        settings.Sepidar.DeviceSerial = deviceSerial;
 
-        if (string.IsNullOrWhiteSpace(settings.Sepidar.IntegrationId))
+        var configuredIntegrationId = NormalizeIdentifier(settings.Sepidar.IntegrationId);
+        if (string.IsNullOrEmpty(configuredIntegrationId))
         {
-            throw new InvalidOperationException("Unable to derive IntegrationID from deviceSerial");
+            configuredIntegrationId = DeriveIntegrationId(deviceSerial);
         }
+
+        if (string.IsNullOrEmpty(configuredIntegrationId))
+        {
+            throw new InvalidOperationException("IntegrationID is not configured and could not be derived from deviceSerial");
+        }
+
+        settings.Sepidar.IntegrationId = configuredIntegrationId;
+        settings.Sepidar.RegisterPayloadMode = "IntegrationOnly";
 
         try
         {
@@ -91,19 +101,10 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
     }
 
-    public async Task<DeviceLoginResponseDto> LoginAsync(DeviceLoginRequestDto request, CancellationToken cancellationToken)
+    public async Task<DeviceLoginResponseDto> LoginAsync(CancellationToken cancellationToken)
     {
         var settings = GetSettings();
-        if (!string.IsNullOrWhiteSpace(request.UserName))
-        {
-            settings.Credentials.UserName = request.UserName.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Password))
-        {
-            settings.Credentials.Password = request.Password.Trim();
-        }
-
+        NormalizeTenantSettings(settings);
         return await _auth.LoginAsync(settings, cancellationToken).ConfigureAwait(false);
     }
 
@@ -136,6 +137,80 @@ public sealed class SepidarGatewayService : ISepidarGatewayService
         }
 
         return settings;
+    }
+
+    private static void NormalizeTenantSettings(GatewaySettings settings)
+    {
+        if (settings.Sepidar is null)
+        {
+            throw new InvalidOperationException("Sepidar settings are not configured.");
+        }
+
+        if (settings.Credentials is null)
+        {
+            throw new InvalidOperationException("Gateway credentials are not configured.");
+        }
+
+        OverrideCredentialsFromEnvironment(settings);
+
+        settings.Sepidar.GenerationVersion = NormalizeIdentifier(settings.Sepidar.GenerationVersion);
+        if (string.IsNullOrEmpty(settings.Sepidar.GenerationVersion))
+        {
+            throw new InvalidOperationException("Sepidar generationVersion is not configured.");
+        }
+
+        settings.Sepidar.IntegrationId = NormalizeIdentifier(settings.Sepidar.IntegrationId);
+        if (string.IsNullOrEmpty(settings.Sepidar.IntegrationId))
+        {
+            throw new InvalidOperationException("Sepidar integrationId is not configured.");
+        }
+
+        settings.Credentials.UserName = settings.Credentials.UserName?.Trim() ?? string.Empty;
+        settings.Credentials.Password = settings.Credentials.Password?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrEmpty(settings.Credentials.UserName))
+        {
+            throw new InvalidOperationException("Environment variable 'SEPIDAR_GATEWAY_USERNAME' is not configured.");
+        }
+
+        if (string.IsNullOrEmpty(settings.Credentials.Password))
+        {
+            throw new InvalidOperationException("Environment variable 'SEPIDAR_GATEWAY_PASSWORD' is not configured.");
+        }
+    }
+
+    private static void OverrideCredentialsFromEnvironment(GatewaySettings settings)
+    {
+        var userNameEnv = Environment.GetEnvironmentVariable("SEPIDAR_GATEWAY_USERNAME");
+        if (!string.IsNullOrWhiteSpace(userNameEnv))
+        {
+            settings.Credentials.UserName = userNameEnv;
+        }
+
+        var passwordEnv = Environment.GetEnvironmentVariable("SEPIDAR_GATEWAY_PASSWORD");
+        if (!string.IsNullOrWhiteSpace(passwordEnv))
+        {
+            settings.Credentials.Password = passwordEnv;
+        }
+    }
+
+    private static string NormalizeIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (!char.IsWhiteSpace(ch))
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static string DeriveIntegrationId(string serial)

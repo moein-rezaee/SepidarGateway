@@ -11,7 +11,7 @@ services:
     ports:
       - "5259:5259" # نگاشت پورت کانتینر (پورت گیت‌وی) به پورت میزبان مورد نظر
     env_file:
-      - ./env/${ASPNETCORE_ENVIRONMENT:-Production}/gateway.env # مسیر براساس مقدار ASPNETCORE_ENVIRONMENT انتخاب می‌شود
+      - ./gateway.env
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5259/health/ready"]
       interval: 30s
