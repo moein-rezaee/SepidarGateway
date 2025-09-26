@@ -500,7 +500,7 @@ public sealed class SepidarAuthService : ISepidarAuth
             {
                 Cypher = enc128.CipherText,
                 IV = enc128.IvBase64,
-                IntegrationID = integrationIdNumber
+                IntegrationID = integrationIdValue
             }, PreserveNamesOptions));
 
             var enc256 = _crypto.EncryptRegisterPayload(tenant.Sepidar.DeviceSerial ?? string.Empty, DevicePayload, 32);
@@ -511,7 +511,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 {
                     Cypher = enc256.CipherText,
                     IV = enc256.IvBase64,
-                    IntegrationID = integrationIdNumber
+                    IntegrationID = integrationIdValue
                 }, PreserveNamesOptions));
             }
         }
@@ -524,7 +524,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 {
                     Cypher = encryptedPayload.CipherText,
                     IV = encryptedPayload.IvBase64,
-                    IntegrationID = integrationIdNumber
+                    IntegrationID = integrationIdValue
                 }, PreserveNamesOptions));
             }
             else
@@ -533,7 +533,7 @@ public sealed class SepidarAuthService : ISepidarAuth
                 {
                     Cypher = encryptedPayload.CipherText,
                     IV = encryptedPayload.IvBase64,
-                    IntegrationID = integrationIdNumber,
+                    IntegrationID = integrationIdValue,
                     DeviceSerial = tenant.Sepidar.DeviceSerial ?? string.Empty
                 }, PreserveNamesOptions));
             }
