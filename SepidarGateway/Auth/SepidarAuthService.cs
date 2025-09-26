@@ -680,6 +680,8 @@ public sealed class SepidarAuthService : ISepidarAuth
             registerRequest.Headers.TryAddWithoutValidation("Cookie", tenant.Sepidar.RegisterCookie);
         }
 
+        LogOutgoingRegisterRequest(tenant, registerUri, registerRequest, requestBody);
+
         HttpResponseMessage? response = null;
         try
         {
@@ -869,6 +871,56 @@ public sealed class SepidarAuthService : ISepidarAuth
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to log outgoing Sepidar login request for gateway {Gateway}", tenant.Name);
+        }
+    }
+
+    private void LogOutgoingRegisterRequest(GatewaySettings tenant, Uri registerUri, HttpRequestMessage registerRequest, string requestBody)
+    {
+        try
+        {
+            var headers = new List<string>();
+            foreach (var header in registerRequest.Headers)
+            {
+                foreach (var value in header.Value)
+                {
+                    headers.Add($"{header.Key}: {value}");
+                }
+            }
+
+            if (registerRequest.Content is { } content)
+            {
+                foreach (var header in content.Headers)
+                {
+                    foreach (var value in header.Value)
+                    {
+                        headers.Add($"{header.Key}: {value}");
+                    }
+                }
+            }
+
+            var newline = Environment.NewLine;
+            var headerLines = string.Join(newline, headers);
+
+            var curlBuilder = new StringBuilder();
+            curlBuilder.Append("curl --location '").Append(registerUri).Append('\'').Append(newline);
+            curlBuilder.Append("  --request ").Append(registerRequest.Method).Append(newline);
+
+            foreach (var header in headers)
+            {
+                curlBuilder.Append("  --header '").Append(header.Replace("'", "\\'")).Append('\'').Append(newline);
+            }
+
+            curlBuilder.Append("  --data '").Append(requestBody.Replace("'", "\\'")).Append('\'');
+            _logger.LogInformation(
+                "Outgoing Sepidar register request for gateway {Gateway}\n{Curl}\nHeaders:\n{Headers}\nBody:\n{Body}",
+                tenant.Name,
+                curlBuilder.ToString(),
+                headerLines,
+                requestBody);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to log outgoing Sepidar register request for gateway {Gateway}", tenant.Name);
         }
     }
 
