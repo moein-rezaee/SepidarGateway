@@ -786,6 +786,8 @@ public sealed class SepidarAuthService : ISepidarAuth
         }, PreserveNamesOptions);
         LoginRequest.Content = new StringContent(LoginPayload, Encoding.UTF8, "application/json");
 
+        LogOutgoingLoginRequest(tenant, LoginUri, LoginRequest, LoginPayload);
+
         using var LoginResponseMessage = await HttpClient.SendAsync(LoginRequest, cancellationToken).ConfigureAwait(false);
         var ResponseContent = await LoginResponseMessage.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
@@ -818,6 +820,56 @@ public sealed class SepidarAuthService : ISepidarAuth
         var TokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(tenant.Jwt.CacheSeconds, ExpiresInSeconds));
 
         return new LoginResult(LoginResponse, TokenExpiry, ExpiresInSeconds);
+    }
+
+    private void LogOutgoingLoginRequest(GatewaySettings tenant, Uri loginUri, HttpRequestMessage loginRequest, string loginPayload)
+    {
+        try
+        {
+            var headers = new List<string>();
+            foreach (var header in loginRequest.Headers)
+            {
+                foreach (var value in header.Value)
+                {
+                    headers.Add($"{header.Key}: {value}");
+                }
+            }
+
+            if (loginRequest.Content is { } content)
+            {
+                foreach (var header in content.Headers)
+                {
+                    foreach (var value in header.Value)
+                    {
+                        headers.Add($"{header.Key}: {value}");
+                    }
+                }
+            }
+
+            var newline = Environment.NewLine;
+            var headerLines = string.Join(newline, headers);
+
+            var curlBuilder = new StringBuilder();
+            curlBuilder.Append("curl --location '").Append(loginUri).Append('\'').Append(newline);
+            curlBuilder.Append("  --request ").Append(loginRequest.Method).Append(newline);
+
+            foreach (var header in headers)
+            {
+                curlBuilder.Append("  --header '").Append(header.Replace("'", "\'")).Append('\'').Append(newline);
+            }
+
+            curlBuilder.Append("  --data '").Append(loginPayload.Replace("'", "\'")).Append('\'');
+            _logger.LogInformation(
+                "Outgoing Sepidar login request for gateway {Gateway}\n{Curl}\nHeaders:\n{Headers}\nBody:\n{Body}",
+                tenant.Name,
+                curlBuilder.ToString(),
+                headerLines,
+                loginPayload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to log outgoing Sepidar login request for gateway {Gateway}", tenant.Name);
+        }
     }
 
     private HttpClient CreateHttpClient(GatewaySettings tenant)
