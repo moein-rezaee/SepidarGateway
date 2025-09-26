@@ -191,9 +191,9 @@ public sealed class SepidarAuthService : ISepidarAuth
             return false;
         }
 
-        if (authState.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
+        if (authState.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
         {
-            return true;
+            return false;
         }
 
         await authState.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -204,37 +204,14 @@ public sealed class SepidarAuthService : ISepidarAuth
                 return false;
             }
 
-            if (authState.LastAuthorizationCheck + TimeSpan.FromSeconds(tenant.Jwt.PreAuthCheckSeconds) > DateTimeOffset.UtcNow)
+            if (authState.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
             {
-                return true;
-            }
-
-            var HttpClient = CreateHttpClient(tenant);
-            using var RequestMessage = new HttpRequestMessage(
-                HttpMethod.Get,
-                BuildTenantUri(tenant, tenant.Sepidar.IsAuthorizedPath, includeApiVersionQuery: true));
-            PrepareHeaders(RequestMessage.Headers, tenant, authState.Token);
-
-            using var HttpResponse = await HttpClient.SendAsync(RequestMessage, cancellationToken).ConfigureAwait(false);
-            if (HttpResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-            {
-                _logger.LogWarning("JWT expired for gateway {Gateway}", tenant.Name);
                 InvalidateToken();
                 return false;
             }
 
-            HttpResponse.EnsureSuccessStatusCode();
-            var ResponseContent = await HttpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var Authorized = bool.TryParse(ResponseContent, out var ParsedValue)
-                             ? ParsedValue
-                             : ResponseContent.Contains("true", StringComparison.OrdinalIgnoreCase);
             authState.LastAuthorizationCheck = DateTimeOffset.UtcNow;
-            if (!Authorized)
-            {
-                InvalidateToken();
-            }
-
-            return Authorized;
+            return true;
         }
         finally
         {
