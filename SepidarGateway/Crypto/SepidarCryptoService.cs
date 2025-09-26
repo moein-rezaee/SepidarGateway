@@ -57,11 +57,21 @@ public sealed class SepidarCryptoService : ISepidarCrypto
     {
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
-        // طبق مستند سپیدار مقدار رمز شده باید پس از رمزگشایی بدون تغییر با مقدار هدر "ArbitraryCode" برابر باشد.
-        // برای اعداد GUID و مقادیر متداول، Encoding.UTF8 همان خروجی خام را تولید می‌کند و در عین حال طول بایت‌ها
-        // از اندازه کلید RSA عبور نمی‌کند. استفاده از UTF-16LE در برخی کلیدهای کوچک باعث خطای
-        // "data too large for key size" می‌شد؛ بنابراین برای سازگاری کامل از UTF-8 استفاده می‌کنیم.
-        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
+        // مستند سپیدار تصریح می‌کند که مقدار هدر "EncArbitraryCode" پس از رمزگشایی باید بدون تغییر با مقدار
+        // خام "ArbitraryCode" برابر باشد. در قرارداد سپیدار این مقایسه بر پایه‌ی UTF-16LE انجام می‌شود، بنابراین
+        // باید از Encoding.Unicode (معادل UTF-16LE در دات‌نت) برای تولید آرایه‌ی بایت استفاده کنیم تا سمت سپیدار
+        // دقیقاً همان رشته‌ی ارسال شده را دریافت کند.
+        var ArbitraryBytes = Encoding.Unicode.GetBytes(arbitraryCode ?? string.Empty);
+
+        var MaximumPayloadLength = (RsaProvider.KeySize / 8) - 11; // حداکثر داده مجاز برای PKCS#1 v1.5
+        if (ArbitraryBytes.Length > MaximumPayloadLength)
+        {
+            throw new InvalidOperationException(
+                "طول ArbitraryCode با اندازه‌ی کلید RSA سازگار نیست؛ لطفاً دستگاه را مجدداً ثبت کنید تا کلید تازه دریافت شود.");
+        }
+
+        // به جای مواجه شدن با خطای مبهم "data too large for key size" از کتابخانه‌ی OpenSSL، قبل از رمزنگاری طول
+        // ورودی را کنترل کرده و خطای قابل فهم به کاربر برمی‌گردانیم.
         var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
         return Convert.ToBase64String(EncryptedBytes);
     }
