@@ -58,8 +58,18 @@ public sealed class SepidarCryptoService : ISepidarCrypto
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
         // طبق مستند رسمی، مقدار رمز شده باید همان رشته ارسال شده در هدر ArbitraryCode باشد.
-        // بنابراین همیشه رشته را با UTF8 به بایت تبدیل می‌کنیم تا پس از رمزگشایی دقیقاً همان مقدار بازسازی شود.
-        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
+        // سپیدار این مقدار را با UTF-16 (Unicode) رمزگشایی می‌کند، بنابراین باید دقیقاً همین رمزگذاری را استفاده کنیم تا
+        // خروجی رمزگشایی بدون کوچک‌ترین تفاوت با هدر مقایسه شود و پیام «عدم تطابق کلید API» رخ ندهد.
+        var ArbitraryBytes = Encoding.Unicode.GetBytes(arbitraryCode ?? string.Empty);
+        var maxPayloadLength = (RsaProvider.KeySize / 8) - 11; // PKCS#1 padding requires 11 bytes.
+
+        if (ArbitraryBytes.Length > maxPayloadLength)
+        {
+            // خطای CryptographicException با متن «data too large for key size» اکنون پیش از فراخوانی Encrypt کنترل می‌شود تا
+            // به‌جای پیام نامفهوم، راهکار دریافت کلید بزرگ‌تر به کاربر پیشنهاد شود.
+            throw new InvalidOperationException("کلید RSA کوچک است؛ دستگاه را دوباره Register کنید تا کلید تازه بگیرید.");
+        }
+
         var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
         return Convert.ToBase64String(EncryptedBytes);
     }
