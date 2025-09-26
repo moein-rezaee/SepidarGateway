@@ -57,9 +57,10 @@ public sealed class SepidarCryptoService : ISepidarCrypto
     {
         using var RsaProvider = RSA.Create();
         ImportRsaParameters(RsaProvider, cryptoOptions);
-        // طبق مستند رسمی، مقدار رمز شده باید همان رشته ارسال شده در هدر ArbitraryCode باشد.
-        // بنابراین همیشه رشته را با UTF8 به بایت تبدیل می‌کنیم تا پس از رمزگشایی دقیقاً همان مقدار بازسازی شود.
-        var ArbitraryBytes = Encoding.UTF8.GetBytes(arbitraryCode ?? string.Empty);
+        // طبق داکیومنت سپیدار، مقدار رمز شده باید بعد از رمزگشایی دقیقاً همان رشته ارسالی در هدر باشد.
+        // خود مستند اشاره می‌کند که نمونه‌های پیاده‌سازی .NET، رشته را به صورت Unicode (UTF-16LE)
+        // رمز می‌کنند؛ بنابراین برای جلوگیری از عدم تطابق «کلید API» حتماً از Encoding.Unicode استفاده می‌کنیم.
+        var ArbitraryBytes = Encoding.Unicode.GetBytes(arbitraryCode ?? string.Empty);
         var EncryptedBytes = RsaProvider.Encrypt(ArbitraryBytes, RSAEncryptionPadding.Pkcs1);
         return Convert.ToBase64String(EncryptedBytes);
     }
